@@ -176,7 +176,9 @@ func TestSetupWorkspace_GitError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	_, _ = workspace.SetupWorkspace(ctx, ws, tempDir, "")
+	if _, err := workspace.SetupWorkspace(ctx, ws, tempDir, ""); err == nil {
+		t.Error("expected an error when a repo fails to fetch")
+	}
 
 	// Verify git-error.log is created under stateDir and NOT inside workspace
 	errLog := filepath.Join(stateDir, "git-error.log")

@@ -52,6 +52,8 @@ const (
 	// resumed actor to finish workspace setup.
 	defaultWorkspaceReadyTimeout = 15 * time.Second
 	workspaceReadyPollInterval   = 500 * time.Millisecond
+	// statusWriteMargin is left of the caller's deadline for storing the status.
+	statusWriteMargin = 2 * time.Second
 )
 
 // SecretResolver looks up a key from a Kubernetes secret in the given namespace.
@@ -270,7 +272,11 @@ func (r *TaskReconciler) Reconcile(ctx context.Context, task *v1alpha1.Task, wor
 	workspaceReady := r.conditionTrue(task, condWorkspaceReady)
 	if workerIP != "" && !workspaceReady {
 		// Poll briefly for workspace setup completion
-		pollCtx, cancel := context.WithTimeout(ctx, r.WorkspaceReadyTimeout)
+		timeout := r.WorkspaceReadyTimeout
+		if deadline, ok := ctx.Deadline(); ok {
+			timeout = min(timeout, time.Until(deadline)-statusWriteMargin)
+		}
+		pollCtx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
 
 		ticker := time.NewTicker(workspaceReadyPollInterval)

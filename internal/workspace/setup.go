@@ -120,7 +120,7 @@ func SetupWorkspace(ctx context.Context, ws *v1alpha1.Workspace, targetPath stri
 
 	if !gitOK {
 		slog.Warn("maiden run workspace setup completed with errors; marker omitted to allow retry", "path", targetPath)
-		return res, nil
+		return res, errors.New("failed to fetch git repositories")
 	}
 
 	writeMarker(markerPath, ws)

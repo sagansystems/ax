@@ -213,7 +213,7 @@ func TestBuildActorTemplate(t *testing.T) {
 		t.Errorf("unexpected image: %q", container.GetImage())
 	}
 	probe := container.GetWakeupProbe().GetHttpGet()
-	if probe == nil || probe.GetPath() != "/readyz" || probe.GetPort() != 80 {
+	if probe == nil || probe.GetPath() != "/healthz" || probe.GetPort() != 80 {
 		t.Errorf("unexpected wakeupProbe: %+v", container.GetWakeupProbe())
 	}
 	snapCfg := tmpl.GetSnapshotConfig()

@@ -393,6 +393,46 @@ func TestTaskReconciler_SuspendError(t *testing.T) {
 	assertCondition(t, reconciled, "Ready", "True", "TaskRunning")
 }
 
+func TestTaskReconciler_WorkspaceReadyRespectsDeadline(t *testing.T) {
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+	defer lis.Close()
+
+	grpcServer := grpc.NewServer()
+	ateapipb.RegisterControlServer(grpcServer, &mockControlServer{workerIP: "127.0.0.1:1"})
+	go grpcServer.Serve(lis)
+	defer grpcServer.Stop()
+
+	client, err := substrate.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("failed to create substrate client: %v", err)
+	}
+	defer client.Close()
+
+	reconciler := controller.NewTaskReconciler(client, "test-template", v1alpha1.DefaultSystemNamespace)
+	reconciler.SecretResolver = noSecrets
+
+	task := &v1alpha1.Task{
+		Metadata: &v1alpha1.ObjectMeta{Name: "slow-task", Atespace: "default"},
+		Spec:     &v1alpha1.TaskSpec{},
+		Status:   &v1alpha1.TaskStatus{Phase: "Running"},
+	}
+
+	// Shorter than the default WorkspaceReadyTimeout, like ax resume.
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	reconciled, err := reconciler.Reconcile(ctx, task, nil)
+	if err != nil {
+		t.Fatalf("Reconcile failed: %v", err)
+	}
+	if ctx.Err() != nil {
+		t.Fatal("Reconcile used the whole deadline, leaving no time to store the status")
+	}
+	assertCondition(t, reconciled, "WorkspaceReady", "False", "Initializing")
+}
+
 func TestTaskReconciler_WorkspaceReady(t *testing.T) {
 	ctx := context.Background()
 

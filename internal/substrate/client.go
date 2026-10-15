@@ -356,9 +356,11 @@ func BuildActorTemplate(atespace, name, image string, envMap map[string]string, 
 			Image:   image,
 			Command: command,
 			Env:     envList,
+			// Substrate only enables egress once this probe passes, and
+			// workspace setup needs egress, so this can't wait on /readyz.
 			WakeupProbe: &ateapipb.WakeupProbe{
 				HttpGet: &ateapipb.HttpGetAction{
-					Path: "/readyz",
+					Path: "/healthz",
 					Port: 80,
 				},
 			},

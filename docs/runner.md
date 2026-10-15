@@ -20,7 +20,7 @@ The control plane does not run `spec.command` as the container entrypoint. It al
 | `GEMINI_API_KEY` | Set when the atespace has a Gemini credential configured |
 | Volume | A durable directory mounted at `/workspace` |
 | System info volume | `/run/ate/egress-trust-bundle/` holding `trust-bundle.pem` (the egress gateway CA plus public roots), `atespace` and `name` (the actor's) |
-| Readiness probe | `GET /readyz` on port 80 |
+| Wakeup probe | `GET /healthz` on port 80 |
 
 Two consequences follow from that table. Your image must contain an executable at `/usr/local/bin/ax-task-runner`, even if it is a symlink or a shell wrapper around something else. And `spec.command` reaches the runner only through `AX_TASK_YAML`; the runner is responsible for parsing it and starting it.
 

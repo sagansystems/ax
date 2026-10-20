@@ -35,7 +35,8 @@ const (
 	KindWorkspace = "Workspace"
 	KindModel     = "Model"
 
-	DefaultTaskImage = "gcr.io/ax-substrate/ate-images/ax-task-runner"
+	DefaultTaskImage       = "gcr.io/ax-substrate/ate-images/ax-task-runner"
+	DefaultSystemNamespace = "ax-system"
 
 	// PhaseTerminating marks a task whose deletion has been requested and whose
 	// actor is being torn down. The record disappears once cleanup completes.
@@ -339,5 +340,5 @@ func ValidateTask(t *Task) error {
 		}
 		seen[p] = r.GetName()
 	}
-	return nil
+	return ValidateResources(spec.GetResources())
 }

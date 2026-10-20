@@ -30,11 +30,16 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Server is the cloud-style metadata server running inside the task actor container,
-// multiplexing HTTP metadata endpoints and guest gRPC daemon services on a single port.
+// Server is the cloud-style metadata server running inside the task actor container.
+// It runs two listeners. The probe listener on all interfaces serves /healthz and
+// /readyz, multiplexed with the guest gRPC services when debug is enabled. The
+// metadata listener serves the /metadata endpoints on loopback only, so they are
+// reachable from inside the container and nowhere else.
 type Server struct {
-	port           int
 	server         *http.Server
+	metadataServer *http.Server
+	probeAddr      string // bound address of the probe listener, set by Start
+	metadataAddr   string // bound address of the metadata listener, set by Start
 	grpcServer     *grpc.Server
 	grpcCleanup    func()
 	mu             sync.RWMutex
@@ -47,23 +52,24 @@ type Server struct {
 type ServerOptions struct {
 	WorkspacePath string
 	LogDir        string
+	// MetadataPort is the loopback port for the /metadata endpoints. Zero picks
+	// a free port; read the result from MetadataURL after Start.
+	MetadataPort int
 }
 
 // NewServer creates a new metadata and guest server serving the task and its
 // bound workspaces, in the task's declaration order. Nil workspaces are dropped.
+// port is the probe and guest port; the metadata endpoints use
+// ServerOptions.MetadataPort on loopback. A zero port picks a free one; read
+// the result from ProbeAddr or MetadataURL after Start.
 func NewServer(port int, task *v1alpha1.Task, workspaces []*v1alpha1.Workspace, opts ...ServerOptions) *Server {
-	if port <= 0 {
-		port = 9999
-	}
-	s := &Server{
-		port:       port,
-		task:       task,
-		workspaces: compactWorkspaces(workspaces),
-	}
-
 	var opt ServerOptions
 	if len(opts) > 0 {
 		opt = opts[0]
+	}
+	s := &Server{
+		task:       task,
+		workspaces: compactWorkspaces(workspaces),
 	}
 
 	// Guest services expose process execution and file access inside the container,
@@ -89,22 +95,17 @@ func NewServer(port int, task *v1alpha1.Task, workspaces []*v1alpha1.Workspace, 
 		slog.Info("guest services disabled; set spec.debug: true on the Task to enable ax ssh")
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", s.handleHealthz)
-	mux.HandleFunc("/readyz", s.handleReadyz)
-
-	// Metadata endpoints:
-	// /metadata/v1alpha1/ax/task        the Task
-	// /metadata/v1alpha1/ax/workspaces  every bound Workspace, as a YAML stream
-	mux.HandleFunc("/metadata/v1alpha1/ax/task", s.handleTask)
-	mux.HandleFunc("/metadata/v1alpha1/ax/workspaces", s.handleWorkspaces)
+	// Probe endpoints, reachable from outside the container.
+	probeMux := http.NewServeMux()
+	probeMux.HandleFunc("/healthz", s.handleHealthz)
+	probeMux.HandleFunc("/readyz", s.handleReadyz)
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if s.grpcServer != nil && r.ProtoMajor == 2 && strings.HasPrefix(r.Header.Get("Content-Type"), "application/grpc") {
 			s.grpcServer.ServeHTTP(w, r)
 			return
 		}
-		mux.ServeHTTP(w, r)
+		probeMux.ServeHTTP(w, r)
 	})
 
 	s.server = &http.Server{
@@ -115,20 +116,60 @@ func NewServer(port int, task *v1alpha1.Task, workspaces []*v1alpha1.Workspace, 
 	s.server.Protocols.SetHTTP1(true)
 	s.server.Protocols.SetUnencryptedHTTP2(true)
 
+	// Metadata endpoints, for the task command only:
+	// /metadata/v1alpha1/ax/task        the Task
+	// /metadata/v1alpha1/ax/workspaces  every bound Workspace, as a YAML stream
+	metadataMux := http.NewServeMux()
+	metadataMux.HandleFunc("/metadata/v1alpha1/ax/task", s.handleTask)
+	metadataMux.HandleFunc("/metadata/v1alpha1/ax/workspaces", s.handleWorkspaces)
+
+	s.metadataServer = &http.Server{
+		Addr:    net.JoinHostPort("127.0.0.1", fmt.Sprint(opt.MetadataPort)),
+		Handler: metadataMux,
+	}
+
 	return s
 }
 
-// Start begins serving the metadata HTTP and guest gRPC service in a background goroutine.
+// ProbeAddr is the address the probe and guest listener is bound to. It is
+// empty until Start succeeds.
+func (s *Server) ProbeAddr() string {
+	return s.probeAddr
+}
+
+// MetadataURL is the base URL of the metadata endpoints, as handed to the task
+// command in AX_METADATA_URL. It is empty until Start succeeds.
+func (s *Server) MetadataURL() string {
+	if s.metadataAddr == "" {
+		return ""
+	}
+	return "http://" + s.metadataAddr
+}
+
+// Start begins serving the probe, guest, and metadata endpoints in background goroutines.
 func (s *Server) Start() error {
 	lis, err := net.Listen("tcp", s.server.Addr)
 	if err != nil {
-		return fmt.Errorf("metadata server listening on %s: %w", s.server.Addr, err)
+		return fmt.Errorf("probe and guest server listening on %s: %w", s.server.Addr, err)
+	}
+	metadataLis, err := net.Listen("tcp", s.metadataServer.Addr)
+	if err != nil {
+		_ = lis.Close()
+		return fmt.Errorf("metadata server listening on %s: %w", s.metadataServer.Addr, err)
 	}
 
-	slog.Info("metadata and guest server started", "addr", s.server.Addr)
+	s.probeAddr = lis.Addr().String()
+	s.metadataAddr = metadataLis.Addr().String()
+	slog.Info("probe and guest server started", "addr", s.probeAddr)
+	slog.Info("metadata server started", "addr", s.metadataAddr)
 
 	go func() {
 		if err := s.server.Serve(lis); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			slog.Error("probe and guest server error", "error", err)
+		}
+	}()
+	go func() {
+		if err := s.metadataServer.Serve(metadataLis); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			slog.Error("metadata server error", "error", err)
 		}
 	}()
@@ -136,12 +177,19 @@ func (s *Server) Start() error {
 	return nil
 }
 
-// Stop gracefully stops the metadata and guest server.
+// Stop gracefully stops the probe, guest, and metadata servers.
 func (s *Server) Stop(ctx context.Context) error {
 	if s.grpcCleanup != nil {
 		s.grpcCleanup()
 	}
-	return s.server.Shutdown(ctx)
+	// Shut both servers down concurrently so one draining its connections does
+	// not hold the other open or use up ctx's deadline.
+	var wg sync.WaitGroup
+	var probeErr, metadataErr error
+	wg.Go(func() { probeErr = s.server.Shutdown(ctx) })
+	wg.Go(func() { metadataErr = s.metadataServer.Shutdown(ctx) })
+	wg.Wait()
+	return errors.Join(probeErr, metadataErr)
 }
 
 // UpdateState allows dynamic updates to the current Task and Workspaces.

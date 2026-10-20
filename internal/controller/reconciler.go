@@ -79,7 +79,7 @@ func NewTaskReconciler(client *substrate.Client, defaultTemplate, defaultTemplat
 		defaultTemplate = "default-template"
 	}
 	if defaultTemplateAtespace == "" {
-		defaultTemplateAtespace = "ax-system"
+		defaultTemplateAtespace = v1alpha1.DefaultSystemNamespace
 	}
 	return &TaskReconciler{
 		client:                  client,
@@ -118,6 +118,11 @@ func (r *TaskReconciler) Reconcile(ctx context.Context, task *v1alpha1.Task, wor
 
 	// 1. Ensure the Atespace exists in Substrate
 	if err := r.client.EnsureAtespace(ctx, atespace); err != nil {
+		if substrate.IsTransientError(err) {
+			r.setNotReady(task, "SubstrateUnavailable", err.Error(), now)
+			task.Status.Phase = "Pending"
+			return task, fmt.Errorf("ensuring atespace: %w", err)
+		}
 		r.setCondition(task, "Ready", "False", "AtespaceCreationFailed", err.Error(), now)
 		task.Status.Phase = "Failed"
 		return task, fmt.Errorf("ensuring atespace: %w", err)
@@ -167,12 +172,30 @@ func (r *TaskReconciler) Reconcile(ctx context.Context, task *v1alpha1.Task, wor
 		extraEnv["AX_WORKSPACES_YAML"] = wsYAML
 	}
 
+	// Resource limits are enforced by the per-task template, so they are checked
+	// here as well as at apply time: a task must never run without limits it asked for.
+	if err := v1alpha1.ValidateResources(task.Spec.Resources); err != nil {
+		r.setNotReady(task, "InvalidResources", err.Error(), now)
+		task.Status.Phase = "Failed"
+		return task, fmt.Errorf("validating resources: %w", err)
+	}
+	resources := substrate.ResourceLimits(task.Spec.Resources)
+
 	// If a custom image, workspace, or extra environment is specified, provision or use a dedicated ActorTemplate
 	if task.Spec != nil && (task.Spec.Image != "" || len(extraEnv) > 0) {
 		slog.Info("ensuring custom ActorTemplate for task", "image", task.Spec.Image)
 		customTemplateName := taskTemplateName(task.Metadata.Name, task.Spec.Image, extraEnv)
 
-		tmpl, err := r.client.EnsureActorTemplateWithImage(ctx, templateAtespace, templateName, atespace, customTemplateName, task.Spec.Image, extraEnv)
+		// spec.resources rides along in AX_TASK_YAML, so a limits change is already
+		// part of the template digest and re-provisions the template.
+		tmpl, err := r.client.EnsureActorTemplateWithImage(ctx, templateAtespace, templateName, atespace, customTemplateName, task.Spec.Image, resources, extraEnv)
+		if err != nil && resources != nil {
+			// The default template does not carry the task's limits, so falling back
+			// would silently run the task unconstrained.
+			r.setNotReady(task, "TemplateCreationFailed", err.Error(), now)
+			task.Status.Phase = "Failed"
+			return task, fmt.Errorf("ensuring actor template: %w", err)
+		}
 		if err != nil {
 			slog.Warn("could not create custom ActorTemplate, falling back to default template", "error", err)
 		} else if tmpl != nil && tmpl.Metadata != nil {
@@ -184,6 +207,11 @@ func (r *TaskReconciler) Reconcile(ctx context.Context, task *v1alpha1.Task, wor
 
 	_, err := r.client.EnsureActor(ctx, atespace, actorName, templateAtespace, templateName)
 	if err != nil {
+		if substrate.IsTransientError(err) {
+			r.setNotReady(task, "SubstrateUnavailable", err.Error(), now)
+			task.Status.Phase = "Pending"
+			return task, fmt.Errorf("ensuring actor: %w", err)
+		}
 		r.setNotReady(task, "ActorCreationFailed", err.Error(), now)
 		task.Status.Phase = "Failed"
 		return task, fmt.Errorf("ensuring actor: %w", err)
@@ -194,7 +222,7 @@ func (r *TaskReconciler) Reconcile(ctx context.Context, task *v1alpha1.Task, wor
 	if task.Status.Phase == "Suspended" || task.Status.Phase == "" {
 		slog.Info("suspending actor on Substrate", "actor", actorName)
 		if err := r.client.SuspendActor(ctx, atespace, actorName); err != nil {
-			slog.Warn("could not suspend actor on Substrate", "error", err)
+			return task, fmt.Errorf("suspending actor: %w", err)
 		}
 		task.Status.WorkerIp = ""
 		task.Status.Phase = "Suspended"
@@ -207,6 +235,11 @@ func (r *TaskReconciler) Reconcile(ctx context.Context, task *v1alpha1.Task, wor
 	slog.Info("resuming actor on Substrate worker", "actor", actorName)
 	_, workerIP, err := r.client.ResumeActor(ctx, atespace, actorName)
 	if err != nil {
+		if substrate.IsTransientError(err) {
+			r.setNotReady(task, "SubstrateUnavailable", err.Error(), now)
+			task.Status.Phase = "Pending"
+			return task, fmt.Errorf("resuming actor: %w", err)
+		}
 		r.setNotReady(task, "ActorResumeFailed", err.Error(), now)
 		task.Status.Phase = "Failed"
 		return task, fmt.Errorf("resuming actor: %w", err)
@@ -222,7 +255,7 @@ func (r *TaskReconciler) Reconcile(ctx context.Context, task *v1alpha1.Task, wor
 		host = h
 		port = p
 	}
-	readyURL := fmt.Sprintf("http://%s:%s/readyz?check=workspace", host, port)
+	readyURL := fmt.Sprintf("http://%s/readyz?check=workspace", net.JoinHostPort(host, port))
 	// Workspace setup happens once per task. After it has completed, WorkspaceReady stays
 	// True across suspend/resume cycles, so only poll while it is still initializing.
 	workspaceReady := r.conditionTrue(task, condWorkspaceReady)
@@ -334,16 +367,16 @@ func (r *TaskReconciler) setCondition(task *v1alpha1.Task, condType, status, rea
 			task.Status.Conditions[i].Status = status
 			task.Status.Conditions[i].Reason = reason
 			task.Status.Conditions[i].Message = message
-			task.Status.Conditions[i].LastTransitionTime = ts
+			task.Status.Conditions[i].UpdateTime = ts
 			return
 		}
 	}
 	task.Status.Conditions = append(task.Status.Conditions, &v1alpha1.Condition{
-		Type:               condType,
-		Status:             status,
-		Reason:             reason,
-		Message:            message,
-		LastTransitionTime: ts,
+		Type:       condType,
+		Status:     status,
+		Reason:     reason,
+		Message:    message,
+		UpdateTime: ts,
 	})
 }
 

@@ -51,7 +51,8 @@ func main() {
 		taskFile string
 		wsFiles  stringList
 	)
-	flag.IntVar(&cfg.Port, "port", runner.DefaultPort, "Port for the metadata and guest server")
+	flag.IntVar(&cfg.Port, "port", runner.DefaultPort, "Port for the probe and guest server")
+	flag.IntVar(&cfg.MetadataPort, "metadata-port", runner.DefaultMetadataPort, "Loopback-only port for the metadata endpoints")
 	flag.StringVar(&taskFile, "task-file", "", "Read the Task YAML from this file instead of AX_TASK_YAML")
 	flag.Var(&wsFiles, "workspace-file", "Read Workspace YAML from this file instead of the environment; repeatable, and each file may hold several documents")
 	flag.Parse()

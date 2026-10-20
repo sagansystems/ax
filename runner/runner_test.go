@@ -47,7 +47,7 @@ func TestRun_StartsTaskCommandWithInjectedEnv(t *testing.T) {
 		t.Fatalf("command did not write its output: %v", err)
 	}
 	fields := strings.Fields(string(out))
-	if len(fields) != 3 || fields[0] != "from-task" || fields[1] != fmt.Sprintf("http://127.0.0.1:%d", h.cfg.Port) {
+	if len(fields) != 3 || fields[0] != "from-task" || fields[1] != fmt.Sprintf("http://127.0.0.1:%d", h.cfg.MetadataPort) {
 		t.Errorf("unexpected env in command: %q", out)
 	}
 	// The working directory is the workspace path; compare resolved paths since
@@ -178,6 +178,7 @@ func newHarness(t *testing.T) *harness {
 	}
 	h.cfg = runner.Config{
 		Port:          freePort(t),
+		MetadataPort:  freePort(t),
 		Task:          h.task,
 		OnCommandExit: func(e runner.CommandExit) { h.exited <- e },
 	}
@@ -292,7 +293,7 @@ func TestRun_SetsUpEveryWorkspace(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("readyz = %d, want 200", resp.StatusCode)
 	}
-	resp, err = http.Get(fmt.Sprintf("http://127.0.0.1:%d/metadata/v1alpha1/ax/workspaces", h.cfg.Port))
+	resp, err = http.Get(fmt.Sprintf("http://127.0.0.1:%d/metadata/v1alpha1/ax/workspaces", h.cfg.MetadataPort))
 	if err != nil {
 		t.Fatal(err)
 	}

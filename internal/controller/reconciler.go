@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -68,6 +69,10 @@ type TaskReconciler struct {
 	// to the Kubernetes secret lookup; tests replace it to avoid touching a cluster.
 	SecretResolver SecretResolver
 
+	// ConfigMapResolver reads each atespace's ax-egress-policy ConfigMap. Nil
+	// leaves actor egress policies untouched.
+	ConfigMapResolver ConfigMapResolver
+
 	// WorkspaceReadyTimeout bounds how long Reconcile waits for the actor's workspace
 	// to report ready before recording it as still initializing.
 	WorkspaceReadyTimeout time.Duration
@@ -87,6 +92,7 @@ func NewTaskReconciler(client *substrate.Client, defaultTemplate, defaultTemplat
 		defaultTemplate:         defaultTemplate,
 		defaultTemplateAtespace: defaultTemplateAtespace,
 		SecretResolver:          model.GetKubernetesSecret,
+		ConfigMapResolver:       GetKubernetesConfigMap,
 		WorkspaceReadyTimeout:   defaultWorkspaceReadyTimeout,
 	}
 }
@@ -216,6 +222,9 @@ func (r *TaskReconciler) Reconcile(ctx context.Context, task *v1alpha1.Task, wor
 		task.Status.Phase = "Failed"
 		return task, fmt.Errorf("ensuring actor: %w", err)
 	}
+
+	// Every reconcile, not just on create: a re-created actor has lost its policy.
+	r.reconcileEgressPolicy(ctx, task, atespace, actorName)
 
 	// 4. Suspend or Resume the Actor
 	// Tasks are suspended by default upon creation until explicitly resumed to "Running".
@@ -358,6 +367,12 @@ func (r *TaskReconciler) conditionTrue(task *v1alpha1.Task, condType string) boo
 		}
 	}
 	return false
+}
+
+func (r *TaskReconciler) removeCondition(task *v1alpha1.Task, condType string) {
+	task.Status.Conditions = slices.DeleteFunc(task.Status.Conditions, func(c *v1alpha1.Condition) bool {
+		return c.Type == condType
+	})
 }
 
 func (r *TaskReconciler) setCondition(task *v1alpha1.Task, condType, status, reason, message string, t time.Time) {

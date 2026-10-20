@@ -1,0 +1,110 @@
+# Gladly fork only: never send this file upstream to google/ax.
+# Publishes docker.io/sagan/ax-server for the control-plane-images Kargo Warehouse in sagansystems/gladly-ax.
+name: Gladly ax-server image
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: docker.io/sagan
+  # Karpenter launches both architectures
+  PLATFORMS: linux/amd64,linux/arm64
+  SUBSTRATE_REPOSITORY: agent-substrate/substrate
+  # gladly-ax deploy/kargo/warehouses.yaml freightCreationCriteria compares this annotation across every image
+  SUBSTRATE_COMMIT_ANNOTATION: com.gladly.ax.substrate-commit
+
+jobs:
+  build:
+    name: build ax-server image
+    runs-on: ubuntu-latest
+    env:
+      PUSH: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          path: ax
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: ax/go.mod
+          cache-dependency-path: ax/go.sum
+
+      - name: Resolve pinned Substrate version
+        id: substrate
+        working-directory: ax
+        run: |
+          version=$(go list -m -f '{{.Version}}' go.ate.dev/substrate)
+          if [[ "${version}" =~ [-.][0-9]{14}-([0-9a-f]{12})$ ]]; then
+            rev="${BASH_REMATCH[1]}"
+          else
+            rev="${version}"
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "rev=${rev}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout Substrate
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.SUBSTRATE_REPOSITORY }}
+          path: substrate
+          fetch-depth: 0
+          filter: blob:none
+
+      - name: Set image metadata
+        env:
+          SUBSTRATE_VERSION: ${{ steps.substrate.outputs.version }}
+          SUBSTRATE_REV: ${{ steps.substrate.outputs.rev }}
+        run: |
+          if ! substrate_commit=$(git -C substrate rev-parse --verify "${SUBSTRATE_REV}^{commit}"); then
+            echo "::error file=go.mod::go.ate.dev/substrate ${SUBSTRATE_VERSION} does not resolve to a ${SUBSTRATE_REPOSITORY} commit"
+            exit 1
+          fi
+          ax_commit=$(git -C ax rev-parse HEAD)
+          {
+            echo "SUBSTRATE_COMMIT=${substrate_commit}"
+            echo "AX_COMMIT=${ax_commit}"
+            echo "AX_TAG=${ax_commit:0:8}"
+            echo "AX_CREATED=$(TZ=UTC git -C ax log -1 --date=format-local:%Y-%m-%dT%H:%M:%SZ --format=%cd)"
+          } >> "$GITHUB_ENV"
+
+      - name: Set up ko
+        uses: ko-build/setup-ko@v0.10
+        with:
+          version: v0.19.1
+
+      - name: Dockerhub Login
+        if: env.PUSH == 'true'
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # Kargo's NewestBuild reads the created annotation first, and ko copies the base image's
+      - name: Build ax-server image
+        working-directory: ax
+        run: |
+          SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
+          export SOURCE_DATE_EPOCH
+          KO_DOCKER_REPO="${REGISTRY}" ko build \
+            --push="${PUSH}" \
+            --base-import-paths \
+            --platform="${PLATFORMS}" \
+            --tags="${AX_TAG}" \
+            --image-annotation="org.opencontainers.image.created=${AX_CREATED}" \
+            --image-annotation="org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --image-annotation="org.opencontainers.image.revision=${AX_COMMIT}" \
+            --image-annotation="${SUBSTRATE_COMMIT_ANNOTATION}=${SUBSTRATE_COMMIT}" \
+            ./cmd/ax-server

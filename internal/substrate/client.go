@@ -34,6 +34,7 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 )
 
 // ClientOptions configures connection to the Substrate Control API server.
@@ -220,6 +221,9 @@ const (
 	// rewrites them on every run and restore.
 	SystemInfoMountPath = "/run/ate/egress-trust-bundle/"
 	systemInfoVolume    = "system-info"
+
+	// egressPolicyName is the name of an actor's singleton egress policy.
+	egressPolicyName = "default"
 
 	DefaultGuestCommand    = "/usr/local/bin/ax-task-runner"
 	DefaultSnapshotsBucket = "gs://dberkov-gke-dev3/ate-env/"
@@ -668,4 +672,78 @@ func (c *Client) DeleteActorTemplate(ctx context.Context, atespace, templateName
 		return fmt.Errorf("deleting actor template %s/%s: %w", atespace, templateName, err)
 	}
 	return nil
+}
+
+// EnsureActorEgressPolicy makes the actor's "default" egress policy hold
+// exactly rules, creating it if missing and replacing it only when its rules
+// differ. It reports whether it wrote the policy.
+func (c *Client) EnsureActorEgressPolicy(ctx context.Context, atespace, actorName string, rules []*ateapipb.EgressRule) (bool, error) {
+	actor := &ateapipb.ObjectRef{Atespace: atespace, Name: actorName}
+	rules = defaultEgressRules(rules)
+	var existing *ateapipb.EgressPolicy
+	err := retryOnCodes(ctx, func() error {
+		var err error
+		existing, err = c.control.GetActorEgressPolicy(ctx, &ateapipb.GetActorEgressPolicyRequest{Actor: actor, Name: egressPolicyName})
+		return err
+	}, codes.Unavailable)
+	if status.Code(err) == codes.NotFound {
+		policy := &ateapipb.EgressPolicy{
+			Metadata: &ateapipb.ResourceMetadata{Atespace: atespace, Name: egressPolicyName},
+			Rules:    rules,
+		}
+		err = retryOnCodes(ctx, func() error {
+			_, err := c.control.CreateActorEgressPolicy(ctx, &ateapipb.CreateActorEgressPolicyRequest{Actor: actor, EgressPolicy: policy})
+			return err
+		}, codes.Unavailable)
+		if err != nil {
+			return false, fmt.Errorf("creating egress policy for actor %s/%s: %w", atespace, actorName, err)
+		}
+		return true, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("getting egress policy for actor %s/%s: %w", atespace, actorName, err)
+	}
+
+	if rulesEqual(existing.GetRules(), rules) {
+		return false, nil
+	}
+	policy := &ateapipb.EgressPolicy{
+		// uid and version are the update's preconditions.
+		Metadata: &ateapipb.ResourceMetadata{
+			Atespace: atespace,
+			Name:     egressPolicyName,
+			Uid:      existing.GetMetadata().GetUid(),
+			Version:  existing.GetMetadata().GetVersion(),
+		},
+		Rules: rules,
+	}
+	err = retryOnCodes(ctx, func() error {
+		_, err := c.control.UpdateActorEgressPolicy(ctx, &ateapipb.UpdateActorEgressPolicyRequest{Actor: actor, EgressPolicy: policy})
+		return err
+	}, codes.Unavailable)
+	if err != nil {
+		return false, fmt.Errorf("updating egress policy for actor %s/%s: %w", atespace, actorName, err)
+	}
+	return true, nil
+}
+
+// defaultEgressRules mirrors ate-api-server's port defaults so a stored policy
+// compares equal to the rules it was created from.
+func defaultEgressRules(rules []*ateapipb.EgressRule) []*ateapipb.EgressRule {
+	out := make([]*ateapipb.EgressRule, len(rules))
+	for i, r := range rules {
+		r = proto.Clone(r).(*ateapipb.EgressRule)
+		switch {
+		case r.GetHttp() != nil && r.Http.Ports == nil:
+			r.Http.Ports = &ateapipb.Ports{Numbers: []int32{80}}
+		case r.GetHttps() != nil && r.Https.Ports == nil:
+			r.Https.Ports = &ateapipb.Ports{Numbers: []int32{443}}
+		}
+		out[i] = r
+	}
+	return out
+}
+
+func rulesEqual(a, b []*ateapipb.EgressRule) bool {
+	return slices.EqualFunc(a, b, func(x, y *ateapipb.EgressRule) bool { return proto.Equal(x, y) })
 }

@@ -36,6 +36,27 @@ jobs:
         with:
           path: ax
 
+      # the runner image and the vendored ax-server.yaml in gladly-ax are built from its AX_COMMIT, not from here
+      - name: Check for runner or manifest changes
+        if: github.event_name == 'push' && !startsWith(github.event.before, '0000000')
+        working-directory: ax
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          git fetch -q --depth=1 origin "${BEFORE}"
+          changed=$(git diff --name-only "${BEFORE}" HEAD -- runner internal/guest internal/workspace internal/metadata pkg/apis deploy/ax-server.yaml)
+          if [[ -n "${changed}" ]]; then
+            msg="This push changes the ax-task-runner contract or deploy/ax-server.yaml. Bump AX_COMMIT in sagansystems/gladly-ax deploy/images.env to rebuild the runner image and re-vendor ax-server.yaml."
+            echo "::warning::${msg}"
+            {
+              echo "${msg}"
+              echo
+              echo '```'
+              echo "${changed}"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
       - name: Set up Go
         uses: actions/setup-go@v7
         with:

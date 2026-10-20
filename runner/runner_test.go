@@ -303,3 +303,75 @@ func TestRun_SetsUpEveryWorkspace(t *testing.T) {
 		t.Errorf("workspaces endpoint should list code then tools:\n%s", body)
 	}
 }
+
+func TestRun_DefersSetupInGoldenBoot(t *testing.T) {
+	h := newHarness(t)
+	sysDir := t.TempDir()
+	h.cfg.SystemInfoDir = sysDir
+	nameFile := filepath.Join(sysDir, "name")
+	if err := os.WriteFile(nameFile, []byte("5f0c-template-uid"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h.task.Spec.Command = []string{"true"}
+	marker := filepath.Join(workspace.AXDir, workspace.MarkerName(h.wsPath))
+
+	h.start(t)
+	waitHealthy(t, h.cfg.Port)
+	select {
+	case e := <-h.exited:
+		t.Fatalf("command ran in the golden boot: %+v", e)
+	case <-time.After(1200 * time.Millisecond):
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Errorf("setup marker written in the golden boot: %v", err)
+	}
+	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/readyz", h.cfg.Port))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode == http.StatusOK {
+		t.Error("readyz = 200 in the golden boot, want not ready")
+	}
+
+	// Substrate rewrites the file when it restores the snapshot as the task's actor.
+	if err := os.WriteFile(nameFile, []byte(h.task.Metadata.Name+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if exit := h.waitExit(t); exit.Err != nil {
+		t.Fatalf("unexpected exit: %+v", exit)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Errorf("setup marker missing after restore: %v", err)
+	}
+}
+
+func TestRun_SetsUpWhenNameMatchesTask(t *testing.T) {
+	h := newHarness(t)
+	sysDir := t.TempDir()
+	h.cfg.SystemInfoDir = sysDir
+	if err := os.WriteFile(filepath.Join(sysDir, "name"), []byte(h.task.Metadata.Name), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h.task.Spec.Command = []string{"true"}
+
+	if exit := h.runUntilCommandExits(t); exit.Err != nil {
+		t.Fatalf("unexpected exit: %+v", exit)
+	}
+	if _, err := os.Stat(filepath.Join(workspace.AXDir, workspace.MarkerName(h.wsPath))); err != nil {
+		t.Errorf("setup marker missing: %v", err)
+	}
+}
+
+func TestRun_GoldenBootStopsOnCancel(t *testing.T) {
+	h := newHarness(t)
+	sysDir := t.TempDir()
+	h.cfg.SystemInfoDir = sysDir
+	if err := os.WriteFile(filepath.Join(sysDir, "name"), []byte("5f0c-template-uid"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h.start(t)
+	waitHealthy(t, h.cfg.Port)
+	h.cancel()
+	h.waitFinished(t, 5*time.Second)
+}

@@ -228,6 +228,48 @@ func TestBuildActorTemplate(t *testing.T) {
 	}
 }
 
+func TestBuildActorTemplate_SystemInfoVolume(t *testing.T) {
+	tmpl := BuildActorTemplate("credtest", "test-tmpl", "", nil, nil, "gs://bucket/", nil)
+
+	want := &ateapipb.Volume{
+		Name: "system-info",
+		SystemInfo: &ateapipb.SystemInfoVolumeSource{
+			DataSources: []*ateapipb.SystemInfoDataSource{{
+				TrustBundle: &ateapipb.TrustBundleDataSource{
+					Names: []string{"egress-mitm.ate.dev", "system-roots.ate.dev"},
+					Path:  "trust-bundle.pem",
+				},
+			}, {
+				ActorMetadata: &ateapipb.ActorMetadataDataSource{
+					Items: []*ateapipb.ActorMetadataItem{
+						{Field: ateapipb.ActorMetadataField_ACTOR_METADATA_FIELD_ATESPACE, Path: "atespace"},
+						{Field: ateapipb.ActorMetadataField_ACTOR_METADATA_FIELD_NAME, Path: "name"},
+					},
+				},
+			}},
+		},
+	}
+	var got *ateapipb.Volume
+	for _, v := range tmpl.GetVolumes() {
+		if v.GetName() == "system-info" {
+			got = v
+		}
+	}
+	if !proto.Equal(got, want) {
+		t.Errorf("system-info volume = %v, want %v", got, want)
+	}
+
+	var mount *ateapipb.VolumeMount
+	for _, m := range tmpl.GetContainers()[0].GetVolumeMounts() {
+		if m.GetName() == "system-info" {
+			mount = m
+		}
+	}
+	if mount.GetMountPath() != "/run/ate/egress-trust-bundle/" {
+		t.Errorf("system-info mount = %v, want mountPath /run/ate/egress-trust-bundle/", mount)
+	}
+}
+
 func TestClient_ResumeActor_WorkerPodIpsAndRetry(t *testing.T) {
 	oldInterval := defaultRetryInterval
 	defaultRetryInterval = 5 * time.Millisecond

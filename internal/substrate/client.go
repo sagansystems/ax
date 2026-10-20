@@ -216,6 +216,11 @@ func (c *Client) GetActorTemplate(ctx context.Context, atespace, templateName st
 }
 
 const (
+	// SystemInfoMountPath holds trust-bundle.pem, atespace and name; atelet
+	// rewrites them on every run and restore.
+	SystemInfoMountPath = "/run/ate/egress-trust-bundle/"
+	systemInfoVolume    = "system-info"
+
 	DefaultGuestCommand    = "/usr/local/bin/ax-task-runner"
 	DefaultSnapshotsBucket = "gs://dberkov-gke-dev3/ate-env/"
 
@@ -356,11 +361,34 @@ func BuildActorTemplate(atespace, name, image string, envMap map[string]string, 
 			VolumeMounts: []*ateapipb.VolumeMount{{
 				Name:      "workspace",
 				MountPath: "/workspace",
+			}, {
+				Name:      systemInfoVolume,
+				MountPath: SystemInfoMountPath,
 			}},
 		}},
 		Volumes: []*ateapipb.Volume{{
 			Name:       "workspace",
 			DurableDir: &ateapipb.DurableDirVolumeSource{},
+		}, {
+			Name: systemInfoVolume,
+			SystemInfo: &ateapipb.SystemInfoVolumeSource{
+				DataSources: []*ateapipb.SystemInfoDataSource{{
+					TrustBundle: &ateapipb.TrustBundleDataSource{
+						Names: []string{"egress-mitm.ate.dev", "system-roots.ate.dev"},
+						Path:  "trust-bundle.pem",
+					},
+				}, {
+					ActorMetadata: &ateapipb.ActorMetadataDataSource{
+						Items: []*ateapipb.ActorMetadataItem{{
+							Field: ateapipb.ActorMetadataField_ACTOR_METADATA_FIELD_ATESPACE,
+							Path:  "atespace",
+						}, {
+							Field: ateapipb.ActorMetadataField_ACTOR_METADATA_FIELD_NAME,
+							Path:  "name",
+						}},
+					},
+				}},
+			},
 		}},
 		SnapshotConfig: &ateapipb.SnapshotConfig{
 			StorageLocation:   snapshotsBucket,

@@ -28,6 +28,8 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -46,6 +48,10 @@ const (
 	// DefaultWorkspacePath is the command's working directory when the task
 	// binds no workspaces.
 	DefaultWorkspacePath = v1alpha1.DefaultWorkspacePath
+
+	// DefaultSystemInfoDir is where Substrate projects the actor's name and atespace.
+	DefaultSystemInfoDir  = "/run/ate/egress-trust-bundle"
+	actorNamePollInterval = 500 * time.Millisecond
 
 	// stopGracePeriod is how long a running task command gets to exit after
 	// SIGTERM before it is killed during shutdown.
@@ -68,6 +74,9 @@ type Config struct {
 	Workspaces []*v1alpha1.Workspace
 	// OnCommandExit, when set, is called once the task command has exited.
 	OnCommandExit func(CommandExit)
+	// SystemInfoDir holds the Substrate-projected actor name file. Empty means
+	// DefaultSystemInfoDir.
+	SystemInfoDir string
 }
 
 // mount pairs one workspace binding from the task spec with the Workspace
@@ -110,6 +119,9 @@ type CommandExit struct {
 }
 
 // Run executes the task-runner lifecycle and blocks until ctx is cancelled.
+//
+// In the template's golden boot, Run waits until the sandbox is restored as the
+// task's actor before doing anything below.
 //
 // Every workspace the task binds is set up in declaration order, each at its
 // own path. The task's spec.command, if any, is then started as a child process
@@ -164,6 +176,14 @@ func Run(ctx context.Context, cfg Config) error {
 		_ = metaServer.Stop(context.Background())
 	}()
 
+	systemInfoDir := cfg.SystemInfoDir
+	if systemInfoDir == "" {
+		systemInfoDir = DefaultSystemInfoDir
+	}
+	if err := waitForTaskActor(ctx, systemInfoDir, cfg.Task.GetMetadata().GetName()); err != nil {
+		return nil
+	}
+
 	ready := true
 	for _, m := range mounts {
 		if _, err := workspace.SetupWorkspace(ctx, m.ws, m.path, m.ref.GetGoal()); err != nil {
@@ -210,6 +230,40 @@ func Run(ctx context.Context, cfg Config) error {
 		reportExit(cfg, cmd, stopCommand(cmd, exited))
 	}
 	return nil
+}
+
+// waitForTaskActor blocks while this sandbox is the template's golden actor,
+// which Substrate names after the template UID and runs without the task's
+// egress policy. The task's actor is restored from that snapshot with the name
+// file rewritten. Without a name file it returns at once.
+func waitForTaskActor(ctx context.Context, dir, taskName string) error {
+	path := filepath.Join(dir, "name")
+	name := readTrimmed(path)
+	if taskName == "" || name == "" || name == taskName {
+		return nil
+	}
+	slog.Info("golden boot: deferring workspace setup until restored as the task's actor", "actor", name, "task", taskName)
+	ticker := time.NewTicker(actorNamePollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			if readTrimmed(path) == taskName {
+				slog.Info("restored as the task's actor; setting up workspaces", "actor", taskName, "atespace", readTrimmed(filepath.Join(dir, "atespace")))
+				return nil
+			}
+		}
+	}
+}
+
+func readTrimmed(path string) string {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
 }
 
 // stopCommand asks the command's process group to terminate, kills it if it has

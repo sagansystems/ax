@@ -623,7 +623,7 @@ func TestTaskReconciler_ResourceLimits(t *testing.T) {
 		t.Errorf("template resources after change = %v, want %v", got, want)
 	}
 
-	// A task without limits inherits the worker defaults: no resources block.
+	// Substrate requires both limits, so a task without limits gets the defaults.
 	plain := &v1alpha1.Task{
 		ApiVersion: v1alpha1.APIVersion,
 		Kind:       v1alpha1.KindTask,
@@ -633,14 +633,19 @@ func TestTaskReconciler_ResourceLimits(t *testing.T) {
 	if _, err := reconciler.Reconcile(ctx, plain); err != nil {
 		t.Fatalf("Reconcile of task without limits failed: %v", err)
 	}
-	if got := mockSrv.createdTemplates[len(mockSrv.createdTemplates)-1].GetResources(); got != nil {
-		t.Errorf("template for task without limits has resources %v, want none", got)
+	defaults := &ateapipb.Resources{Limits: []*ateapipb.Limits{
+		{Name: "cpu", Quantity: substrate.DefaultCPULimit},
+		{Name: "memory", Quantity: substrate.DefaultMemoryLimit},
+	}}
+	if got := mockSrv.createdTemplates[len(mockSrv.createdTemplates)-1].GetResources(); !proto.Equal(got, defaults) {
+		t.Errorf("template for task without limits has resources %v, want %v", got, defaults)
 	}
 }
 
 // A task that asks for limits must never run without them: invalid limits and a
 // Substrate rejection of the template both fail the reconcile instead of falling
-// back to the default template. Without limits the fallback contract is unchanged.
+// back to the default template. A task without limits gets the default limits, so
+// the same holds for it.
 func TestTaskReconciler_ResourceLimitsFailurePaths(t *testing.T) {
 	ctx := context.Background()
 
@@ -722,23 +727,22 @@ func TestTaskReconciler_ResourceLimitsFailurePaths(t *testing.T) {
 		}
 	})
 
-	t.Run("rejected template without limits still falls back", func(t *testing.T) {
+	t.Run("rejected template without limits does not fall back", func(t *testing.T) {
 		mockSrv := &mockControlServer{
 			createTemplateErr: status.Error(codes.InvalidArgument, "image must be pinned by digest"),
 		}
 		reconciler := setup(t, mockSrv)
 
 		reconciled, err := reconciler.Reconcile(ctx, newTask("no-limits", nil))
-		if err != nil {
-			t.Fatalf("Reconcile without limits failed: %v", err)
+		if err == nil {
+			t.Fatal("Reconcile succeeded although the template was rejected")
 		}
-		// A fresh task is provisioned on the fallback template and then
-		// suspended until it is executed.
-		if reconciled.Status.Phase != "Suspended" {
-			t.Errorf("phase = %q, want Suspended", reconciled.Status.Phase)
+		if reconciled.Status.Phase != "Failed" {
+			t.Errorf("phase = %q, want Failed", reconciled.Status.Phase)
 		}
-		if len(mockSrv.createdActors) != 1 {
-			t.Errorf("fallback did not create the actor: %v", mockSrv.createdActors)
+		assertCondition(t, reconciled, "Ready", "False", "TemplateCreationFailed")
+		if len(mockSrv.createdActors) != 0 {
+			t.Errorf("task ran on a fallback template: actors=%v", mockSrv.createdActors)
 		}
 	})
 }

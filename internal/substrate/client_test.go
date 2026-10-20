@@ -21,8 +21,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/agent-substrate/substrate/pkg/proto/ateapipb"
 	"github.com/google/ax/pkg/apis/v1alpha1"
+	"go.ate.dev/substrate/pkg/proto/ateapipb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -124,7 +124,7 @@ func (m *mockControlClient) GetActor(ctx context.Context, req *ateapipb.GetActor
 	return nil, status.Error(codes.NotFound, "actor not found")
 }
 
-func TestClient_DeleteActor_AnyStateTrue(t *testing.T) {
+func TestClient_DeleteActor_SendsActorRef(t *testing.T) {
 	mock := &mockControlClient{
 		actorRemaining: 0,
 	}
@@ -142,9 +142,6 @@ func TestClient_DeleteActor_AnyStateTrue(t *testing.T) {
 		t.Fatalf("expected 1 DeleteActor call, got %d", len(mock.deleteCalls))
 	}
 	req := mock.deleteCalls[0]
-	if !req.GetAnyState() {
-		t.Errorf("expected AnyState to be true, got %v", req.GetAnyState())
-	}
 	if req.GetActor().GetAtespace() != "test-ns" || req.GetActor().GetName() != "test-actor" {
 		t.Errorf("unexpected actor ref in request: %v", req.GetActor())
 	}

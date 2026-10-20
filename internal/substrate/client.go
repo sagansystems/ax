@@ -15,6 +15,7 @@
 package substrate
 
 import (
+	"cmp"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -219,7 +220,7 @@ func (c *Client) GetActorTemplate(ctx context.Context, atespace, templateName st
 const (
 	// SystemInfoMountPath holds trust-bundle.pem, atespace and name; atelet
 	// rewrites them on every run and restore.
-	SystemInfoMountPath = "/run/ate/egress-trust-bundle/"
+	SystemInfoMountPath = "/run/ate/egress-trust-bundle"
 	systemInfoVolume    = "system-info"
 
 	// egressPolicyName is the name of an actor's singleton egress policy.
@@ -227,6 +228,10 @@ const (
 
 	DefaultGuestCommand    = "/usr/local/bin/ax-task-runner"
 	DefaultSnapshotsBucket = "gs://dberkov-gke-dev3/ate-env/"
+
+	// Substrate books these against the worker's capacity, so they set how many tasks share a worker.
+	DefaultCPULimit    = "1"
+	DefaultMemoryLimit = "2Gi"
 
 	// defaultRetryAttempts is the maximum number of calls retryOnCodes makes. With
 	// exponential backoff from defaultRetryInterval capped at maxRetryInterval
@@ -301,25 +306,19 @@ func retryOnCodes(ctx context.Context, fn func() error, retryable ...codes.Code)
 
 // ResourceLimits translates a Task's resource limits into the Substrate
 // ActorTemplate resources block. Substrate sizes a sandbox by limits alone
-// (requests are rejected by v1alpha1.ValidateResources). It returns nil when no
-// limit is set so the template inherits the worker defaults.
+// (requests are rejected by v1alpha1.ValidateResources) and requires both a cpu
+// and a memory limit, so a limit the Task leaves unset comes from
+// AX_DEFAULT_CPU_LIMIT or AX_DEFAULT_MEMORY_LIMIT, else DefaultCPULimit or
+// DefaultMemoryLimit.
 func ResourceLimits(reqs *v1alpha1.ResourcesSpec) *ateapipb.Resources {
 	limits := reqs.GetLimits()
-	var out []*ateapipb.Limits
-	if cpu := limits.GetCpu(); cpu != "" {
-		out = append(out, &ateapipb.Limits{Name: "cpu", Quantity: cpu})
-	}
-	if memory := limits.GetMemory(); memory != "" {
-		out = append(out, &ateapipb.Limits{Name: "memory", Quantity: memory})
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return &ateapipb.Resources{Limits: out}
+	return &ateapipb.Resources{Limits: []*ateapipb.Limits{
+		{Name: "cpu", Quantity: cmp.Or(limits.GetCpu(), os.Getenv("AX_DEFAULT_CPU_LIMIT"), DefaultCPULimit)},
+		{Name: "memory", Quantity: cmp.Or(limits.GetMemory(), os.Getenv("AX_DEFAULT_MEMORY_LIMIT"), DefaultMemoryLimit)},
+	}}
 }
 
 // BuildActorTemplate constructs a Substrate ActorTemplate based on the standard ate-env specification.
-// A nil resources leaves the sandbox sized by the worker defaults.
 func BuildActorTemplate(atespace, name, image string, envMap map[string]string, command []string, snapshotsBucket string, resources *ateapipb.Resources) *ateapipb.ActorTemplate {
 	if atespace == "" {
 		atespace = "default"
@@ -405,7 +404,7 @@ func BuildActorTemplate(atespace, name, image string, envMap map[string]string, 
 }
 
 // EnsureActorTemplateWithImage creates an ActorTemplate using the specified container image,
-// resource limits (nil for worker defaults), and optional environment variables.
+// resource limits, and optional environment variables.
 func (c *Client) EnsureActorTemplateWithImage(ctx context.Context, baseAtespace, baseTemplate, targetAtespace, targetTemplate, image string, resources *ateapipb.Resources, extraEnv ...map[string]string) (*ateapipb.ActorTemplate, error) {
 	existing, err := c.GetActorTemplate(ctx, targetAtespace, targetTemplate)
 	if err == nil && existing != nil {

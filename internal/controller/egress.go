@@ -113,7 +113,7 @@ func egressRulesFromConfigMap(data map[string]string) ([]*ateapipb.EgressRule, e
 }
 
 // egressPolicyFromYAML mirrors kubectl-ate's egressPolicyFromManifest at
-// Substrate 34bde58: exactly one document, strict protojson.
+// Substrate v0.6.0: exactly one document, strict protojson.
 func egressPolicyFromYAML(data []byte) (*ateapipb.EgressPolicy, error) {
 	dec := yamlv3.NewDecoder(bytes.NewReader(data))
 	if err := dec.Decode(&yamlv3.Node{}); err != nil {

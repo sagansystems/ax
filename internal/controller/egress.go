@@ -43,7 +43,7 @@ const (
 	egressPolicyConfigMap = "ax-egress-policy"
 	// condEgressPolicy reports whether the actor's egress policy matches ax-egress-policy.
 	condEgressPolicy = "EgressPolicyApplied"
-	// configMapLookupTimeout bounds the ConfigMap read like secretLookupTimeout.
+	// configMapLookupTimeout bounds the ConfigMap read.
 	configMapLookupTimeout = 5 * time.Second
 )
 
@@ -62,32 +62,32 @@ func (r *TaskReconciler) reconcileEgressPolicy(ctx context.Context, task *v1alph
 	data, err := r.ConfigMapResolver(lookupCtx, atespace, egressPolicyConfigMap)
 	cancel()
 	if errors.Is(err, ErrConfigMapNotFound) {
-		r.removeCondition(task, condEgressPolicy)
+		removeCondition(task, condEgressPolicy)
 		return
 	}
 	if err != nil {
 		slog.Warn("could not read egress policy configmap", "atespace", atespace, "error", err)
-		r.setCondition(task, condEgressPolicy, "False", "ConfigMapUnavailable", err.Error(), time.Now())
+		setCondition(task, condEgressPolicy, "False", "ConfigMapUnavailable", err.Error(), time.Now())
 		return
 	}
 
 	rules, err := egressRulesFromConfigMap(data)
 	if err != nil {
 		slog.Warn("invalid egress policy configmap, leaving the actor's policy unchanged", "atespace", atespace, "error", err)
-		r.setCondition(task, condEgressPolicy, "False", "InvalidEgressPolicy", err.Error(), time.Now())
+		setCondition(task, condEgressPolicy, "False", "InvalidEgressPolicy", err.Error(), time.Now())
 		return
 	}
 
 	changed, err := r.client.EnsureActorEgressPolicy(ctx, atespace, actorName, rules)
 	if err != nil {
 		slog.Warn("could not apply egress policy", "atespace", atespace, "actor", actorName, "error", err)
-		r.setCondition(task, condEgressPolicy, "False", "EgressPolicyApplyFailed", err.Error(), time.Now())
+		setCondition(task, condEgressPolicy, "False", "EgressPolicyApplyFailed", err.Error(), time.Now())
 		return
 	}
 	if changed {
 		slog.Info("applied egress policy to actor", "atespace", atespace, "actor", actorName, "rules", len(rules))
 	}
-	r.setCondition(task, condEgressPolicy, "True", "EgressPolicyApplied",
+	setCondition(task, condEgressPolicy, "True", "EgressPolicyApplied",
 		fmt.Sprintf("Actor egress policy matches ConfigMap %s/%s", atespace, egressPolicyConfigMap), time.Now())
 }
 

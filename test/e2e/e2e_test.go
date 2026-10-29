@@ -238,7 +238,7 @@ func TestE2E_TaskLifecycleAndSubstrateSync(t *testing.T) {
 	if containers := tmpl.GetContainers(); len(containers) != 1 {
 		t.Fatalf("actor template has %d containers, want 1", len(containers))
 	}
-	if probe := tmpl.GetContainers()[0].GetWakeupProbe().GetHttpGet(); probe.GetPath() != "/readyz" || probe.GetPort() != 80 {
+	if probe := tmpl.GetContainers()[0].GetWakeupProbe().GetHttpGet(); probe.GetPath() != "/healthz" || probe.GetPort() != 80 {
 		t.Fatalf("unexpected WakeupProbe: %+v", tmpl.GetContainers()[0].GetWakeupProbe())
 	}
 	// Newer Substrate versions may return SnapshotConfig fields AX's proto does

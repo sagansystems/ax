@@ -134,8 +134,7 @@ func newEgressReconciler(t *testing.T, cms *fakeConfigMaps) (*controller.TaskRec
 	}
 	t.Cleanup(func() { client.Close() })
 
-	r := controller.NewTaskReconciler(client, "test-template", v1alpha1.DefaultSystemNamespace)
-	r.SecretResolver = noSecrets
+	r := controller.NewTaskReconciler(client, "test-template", v1alpha1.DefaultSystemNamespace, "")
 	r.ConfigMapResolver = cms.resolve
 	r.WorkspaceReadyTimeout = 50 * time.Millisecond
 	return r, mockSrv
@@ -187,7 +186,7 @@ func findCondition(task *v1alpha1.Task, condType string) *v1alpha1.Condition {
 func TestReconcileEgressPolicy_NoConfigMapCreatesNothing(t *testing.T) {
 	r, srv := newEgressReconciler(t, &fakeConfigMaps{})
 
-	task, err := r.Reconcile(context.Background(), egressTask(""))
+	task, err := r.Reconcile(context.Background(), egressTask(""), nil)
 	if err != nil {
 		t.Fatalf("Reconcile failed: %v", err)
 	}
@@ -210,7 +209,7 @@ func TestReconcileEgressPolicy_MergesYAMLKeysInOrder(t *testing.T) {
 	r, srv := newEgressReconciler(t, cms)
 
 	for _, phase := range []string{"", "Running"} {
-		task, err := r.Reconcile(context.Background(), egressTask(phase))
+		task, err := r.Reconcile(context.Background(), egressTask(phase), nil)
 		if err != nil {
 			t.Fatalf("Reconcile(phase %q) failed: %v", phase, err)
 		}
@@ -243,11 +242,11 @@ func TestReconcileEgressPolicy_UpdatesChangedPolicy(t *testing.T) {
 	cms := &fakeConfigMaps{data: map[string]map[string]string{"credtest/ax-egress-policy": cm}}
 	r, srv := newEgressReconciler(t, cms)
 
-	if _, err := r.Reconcile(context.Background(), egressTask("")); err != nil {
+	if _, err := r.Reconcile(context.Background(), egressTask(""), nil); err != nil {
 		t.Fatalf("first Reconcile failed: %v", err)
 	}
 	cm["policy.yaml"] = githubYAML
-	task, err := r.Reconcile(context.Background(), egressTask(""))
+	task, err := r.Reconcile(context.Background(), egressTask(""), nil)
 	if err != nil {
 		t.Fatalf("second Reconcile failed: %v", err)
 	}
@@ -270,7 +269,7 @@ func TestReconcileEgressPolicy_InvalidYAMLLeavesPolicy(t *testing.T) {
 	cms := &fakeConfigMaps{data: map[string]map[string]string{"credtest/ax-egress-policy": cm}}
 	r, srv := newEgressReconciler(t, cms)
 
-	if _, err := r.Reconcile(context.Background(), egressTask("")); err != nil {
+	if _, err := r.Reconcile(context.Background(), egressTask(""), nil); err != nil {
 		t.Fatalf("first Reconcile failed: %v", err)
 	}
 	before := proto.Clone(srv.policies["credtest/egress-task"])
@@ -281,7 +280,7 @@ func TestReconcileEgressPolicy_InvalidYAMLLeavesPolicy(t *testing.T) {
 		"two documents": baselineYAML + "---\n" + githubYAML,
 	} {
 		cm["policy.yaml"] = value
-		task, err := r.Reconcile(context.Background(), egressTask(""))
+		task, err := r.Reconcile(context.Background(), egressTask(""), nil)
 		if err != nil {
 			t.Fatalf("%s: Reconcile returned %v, want the task reconciled anyway", name, err)
 		}
@@ -301,7 +300,7 @@ func TestReconcileEgressPolicy_InvalidYAMLLeavesPolicy(t *testing.T) {
 func TestReconcileEgressPolicy_ConfigMapReadError(t *testing.T) {
 	r, srv := newEgressReconciler(t, &fakeConfigMaps{err: errors.New("connection refused")})
 
-	task, err := r.Reconcile(context.Background(), egressTask(""))
+	task, err := r.Reconcile(context.Background(), egressTask(""), nil)
 	if err != nil {
 		t.Fatalf("Reconcile failed: %v", err)
 	}

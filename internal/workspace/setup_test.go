@@ -50,7 +50,7 @@ func TestSetupWorkspace_MaidenRun(t *testing.T) {
 	defer func() { workspace.AXDir = origAXDir }()
 
 	// 1. Maiden run
-	res1, err := workspace.SetupWorkspace(context.Background(), ws, tempDir, "Test maiden run setup")
+	res1, err := workspace.SetupWorkspace(context.Background(), ws, tempDir)
 	if err != nil {
 		t.Fatalf("maiden setup failed: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestSetupWorkspace_MaidenRun(t *testing.T) {
 	}
 
 	// 2. Second run (should detect already initialized)
-	res2, err := workspace.SetupWorkspace(context.Background(), ws, tempDir, "")
+	res2, err := workspace.SetupWorkspace(context.Background(), ws, tempDir)
 	if err != nil {
 		t.Fatalf("second setup failed: %v", err)
 	}
@@ -123,7 +123,7 @@ func TestSetupWorkspace_GitSubdir(t *testing.T) {
 	workspace.AXDir = stateDir
 	defer func() { workspace.AXDir = origAXDir }()
 
-	res, err := workspace.SetupWorkspace(context.Background(), ws, tempDir, "")
+	res, err := workspace.SetupWorkspace(context.Background(), ws, tempDir)
 	if err != nil {
 		t.Fatalf("setup failed: %v", err)
 	}
@@ -176,7 +176,7 @@ func TestSetupWorkspace_GitError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	if _, err := workspace.SetupWorkspace(ctx, ws, tempDir, ""); err == nil {
+	if _, err := workspace.SetupWorkspace(ctx, ws, tempDir); err == nil {
 		t.Error("expected an error when a repo fails to fetch")
 	}
 
@@ -249,7 +249,7 @@ echo '3' > file.txt && git add . && git commit -m 'commit 3'
 	workspace.AXDir = stateDir
 	defer func() { workspace.AXDir = origAXDir }()
 
-	res, err := workspace.SetupWorkspace(context.Background(), ws, tempDir, "")
+	res, err := workspace.SetupWorkspace(context.Background(), ws, tempDir)
 	if err != nil {
 		t.Fatalf("setup failed: %v", err)
 	}
@@ -309,7 +309,7 @@ func TestSetupWorkspace_InlinedFiles(t *testing.T) {
 	workspace.AXDir = stateDir
 	defer func() { workspace.AXDir = origAXDir }()
 
-	res, err := workspace.SetupWorkspace(context.Background(), ws, tempDir, "")
+	res, err := workspace.SetupWorkspace(context.Background(), ws, tempDir)
 	if err != nil {
 		t.Fatalf("setup failed: %v", err)
 	}

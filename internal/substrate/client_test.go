@@ -17,7 +17,6 @@ package substrate
 import (
 	"context"
 	"errors"
-	"path"
 	"sync"
 	"testing"
 	"time"
@@ -125,7 +124,7 @@ func (m *mockControlClient) GetActor(ctx context.Context, req *ateapipb.GetActor
 	return nil, status.Error(codes.NotFound, "actor not found")
 }
 
-func TestClient_DeleteActor_SendsActorRef(t *testing.T) {
+func TestClient_DeleteActor_AnyStateTrue(t *testing.T) {
 	mock := &mockControlClient{
 		actorRemaining: 0,
 	}
@@ -266,8 +265,7 @@ func TestBuildActorTemplate_SystemInfoVolume(t *testing.T) {
 			mount = m
 		}
 	}
-	// Substrate rejects mount paths that are not clean, including a trailing '/'.
-	if p := mount.GetMountPath(); p != "/run/ate/egress-trust-bundle" || p != path.Clean(p) {
+	if mount.GetMountPath() != "/run/ate/egress-trust-bundle" {
 		t.Errorf("system-info mount = %v, want mountPath /run/ate/egress-trust-bundle", mount)
 	}
 }
@@ -492,62 +490,63 @@ func TestIsTransientError(t *testing.T) {
 }
 
 func TestResourceLimits(t *testing.T) {
-	defaults := []*ateapipb.Limits{
-		{Name: "cpu", Quantity: DefaultCPULimit},
-		{Name: "memory", Quantity: DefaultMemoryLimit},
-	}
 	tests := []struct {
 		name string
-		env  map[string]string
 		reqs *v1alpha1.ResourcesSpec
-		want []*ateapipb.Limits
+		want *ateapipb.ResourceRequirements
 	}{
-		{name: "nil", want: defaults},
-		{name: "empty", reqs: &v1alpha1.ResourcesSpec{}, want: defaults},
-		{name: "empty limits", reqs: &v1alpha1.ResourcesSpec{Limits: &v1alpha1.ResourceList{}}, want: defaults},
+		{name: "nil"},
+		{name: "empty", reqs: &v1alpha1.ResourcesSpec{}},
+		{name: "empty limits", reqs: &v1alpha1.ResourcesSpec{Limits: &v1alpha1.ResourceList{}}},
 		{
 			name: "cpu limit",
 			reqs: &v1alpha1.ResourcesSpec{Limits: &v1alpha1.ResourceList{Cpu: "2"}},
-			want: []*ateapipb.Limits{{Name: "cpu", Quantity: "2"}, {Name: "memory", Quantity: DefaultMemoryLimit}},
+			want: &ateapipb.ResourceRequirements{Limits: &ateapipb.Resources{CpuMillicores: 2000, MemoryBytes: DefaultMemoryBytes}},
 		},
 		{
 			name: "memory limit",
 			reqs: &v1alpha1.ResourcesSpec{Limits: &v1alpha1.ResourceList{Memory: "4Gi"}},
-			want: []*ateapipb.Limits{{Name: "cpu", Quantity: DefaultCPULimit}, {Name: "memory", Quantity: "4Gi"}},
+			want: &ateapipb.ResourceRequirements{Limits: &ateapipb.Resources{CpuMillicores: DefaultCPUMillicores, MemoryBytes: 4 << 30}},
 		},
 		{
 			name: "cpu and memory limits",
 			reqs: &v1alpha1.ResourcesSpec{
 				Limits: &v1alpha1.ResourceList{Cpu: "2", Memory: "4Gi"},
 			},
-			want: []*ateapipb.Limits{{Name: "cpu", Quantity: "2"}, {Name: "memory", Quantity: "4Gi"}},
-		},
-		{
-			name: "server defaults",
-			env:  map[string]string{"AX_DEFAULT_CPU_LIMIT": "500m", "AX_DEFAULT_MEMORY_LIMIT": "1Gi"},
-			reqs: &v1alpha1.ResourcesSpec{Limits: &v1alpha1.ResourceList{Memory: "4Gi"}},
-			want: []*ateapipb.Limits{{Name: "cpu", Quantity: "500m"}, {Name: "memory", Quantity: "4Gi"}},
+			want: &ateapipb.ResourceRequirements{Limits: &ateapipb.Resources{
+				CpuMillicores: 2000,
+				MemoryBytes:   4 << 30,
+			}},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv("AX_DEFAULT_CPU_LIMIT", tt.env["AX_DEFAULT_CPU_LIMIT"])
-			t.Setenv("AX_DEFAULT_MEMORY_LIMIT", tt.env["AX_DEFAULT_MEMORY_LIMIT"])
 			got := ResourceLimits(tt.reqs)
-			if want := (&ateapipb.Resources{Limits: tt.want}); !proto.Equal(got, want) {
-				t.Fatalf("ResourceLimits() = %v, want %v", got, want)
+			if !proto.Equal(got, tt.want) {
+				t.Fatalf("ResourceLimits() = %v, want %v", got, tt.want)
 			}
 		})
 	}
 }
 
 func TestBuildActorTemplate_Resources(t *testing.T) {
-	limits := &ateapipb.Resources{Limits: []*ateapipb.Limits{
-		{Name: "cpu", Quantity: "2"},
-		{Name: "memory", Quantity: "4Gi"},
+	limits := &ateapipb.ResourceRequirements{Limits: &ateapipb.Resources{
+		CpuMillicores: 2000,
+		MemoryBytes:   4 << 30,
 	}}
 	tmpl := BuildActorTemplate("default", "task-tmpl-01234567", "ghcr.io/my-org/agent@sha256:abc", nil, nil, "", limits)
 	if !proto.Equal(tmpl.GetResources(), limits) {
 		t.Fatalf("template resources = %v, want %v", tmpl.GetResources(), limits)
+	}
+
+	// Without explicit limits the template carries the default CPU and memory
+	// limits required by Substrate.
+	wantDefault := &ateapipb.ResourceRequirements{Limits: &ateapipb.Resources{
+		CpuMillicores: DefaultCPUMillicores,
+		MemoryBytes:   DefaultMemoryBytes,
+	}}
+	tmpl = BuildActorTemplate("default", "task-tmpl-01234567", "ghcr.io/my-org/agent@sha256:abc", nil, nil, "", nil)
+	if !proto.Equal(tmpl.GetResources(), wantDefault) {
+		t.Fatalf("template without limits has resources %v, want %v", tmpl.GetResources(), wantDefault)
 	}
 }

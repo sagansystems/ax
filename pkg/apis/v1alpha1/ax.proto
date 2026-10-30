@@ -33,7 +33,6 @@ service AX {
   rpc DeleteTask(DeleteTaskRequest) returns (DeleteTaskResponse);
   rpc SuspendTask(SuspendTaskRequest) returns (Task);
   rpc ResumeTask(ResumeTaskRequest) returns (Task);
-  rpc WatchTask(WatchTaskRequest) returns (stream WatchTaskResponse);
 
 
   // Workspaces
@@ -72,12 +71,21 @@ message TaskSpec {
   repeated string command = 2;
   repeated EnvVar env = 3;
   ResourcesSpec resources = 4;
-  // workspaces binds one or more Workspaces, each mounted at its own path
-  // under /workspace. The first entry is the task command's working directory.
-  repeated WorkspaceRef workspaces = 5;
+  // workspace binds the Workspace the task works in. It is mounted at
+  // /workspace unless the binding sets a path, and that path is the task
+  // command's working directory. A task without a workspace gets an empty
+  // working directory at /workspace.
+  WorkspaceRef workspace = 5;
   // debug enables the in-container guest services (process execution and file
   // access) that back `ax ssh`. Off by default.
   bool debug = 6;
+  // config is free-form, runner-defined configuration. AX stores it and
+  // hands it to the runner as-is, as part of the Task in AX_TASK_YAML and
+  // the task metadata endpoint. The control plane only checks that it is an
+  // object within MaxTaskConfigSize; it does not validate or interpret it.
+  // It is stored in plain text and shown by `ax get task`, so it must not
+  // hold secrets.
+  google.protobuf.Struct config = 7;
 }
 
 message EnvVar {
@@ -98,8 +106,6 @@ message ResourceList {
 message WorkspaceRef {
   string name = 1;
   string path = 2;
-  // TODO(jbd): Consider removing goal.
-  string goal = 3;
 }
 
 message TaskStatus {
@@ -238,16 +244,6 @@ message SuspendTaskRequest {
 message ResumeTaskRequest {
   string atespace = 1;
   string name = 2;
-}
-
-message WatchTaskRequest {
-  string atespace = 1;
-  string name = 2;
-}
-
-message WatchTaskResponse {
-  Task task = 1;
-  string action = 2;
 }
 
 // Workspaces

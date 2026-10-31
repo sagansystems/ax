@@ -255,6 +255,13 @@ ensure_substrate_images() {
       KO_DOCKER_REPO="${REGISTRY_ADDR}" KO_DEFAULTPLATFORMS="linux/${GOARCH}" \
       go run ./cmd/ate-setup publish release-images
   )
+  # publish release-images skips Dockerfile-built envoy-dataplane, which the install still needs
+  if ! registry_digest envoy-dataplane "${SUBSTRATE_IMAGE_TAG}" > /dev/null; then
+    log "Building envoy-dataplane (tag ${SUBSTRATE_IMAGE_TAG})..."
+    docker build -q --platform "linux/${GOARCH}" -t "${REGISTRY_ADDR}/envoy-dataplane:${SUBSTRATE_IMAGE_TAG}" \
+      "${SUBSTRATE_WORK_DIR}/cmd/dataplane/envoy" > /dev/null
+    docker push -q "${REGISTRY_ADDR}/envoy-dataplane:${SUBSTRATE_IMAGE_TAG}" > /dev/null
+  fi
 }
 
 # The WorkerPool's ko:// worker image reference, and the image name Substrate

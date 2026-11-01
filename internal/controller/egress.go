@@ -32,7 +32,7 @@ import (
 	"time"
 
 	"github.com/google/ax/pkg/apis/v1alpha1"
-	"go.ate.dev/substrate/pkg/proto/ateapipb"
+	ateapipb "go.ate.dev/substrate/api/ateapi/v1"
 	"google.golang.org/protobuf/encoding/protojson"
 	yamlv3 "gopkg.in/yaml.v3"
 	"sigs.k8s.io/yaml"
@@ -113,7 +113,7 @@ func egressRulesFromConfigMap(data map[string]string) ([]*ateapipb.EgressRule, e
 }
 
 // egressPolicyFromYAML mirrors kubectl-ate's egressPolicyFromManifest at
-// Substrate v0.6.0: exactly one document, strict protojson.
+// Substrate 1f31ae0f: exactly one document, strict protojson.
 func egressPolicyFromYAML(data []byte) (*ateapipb.EgressPolicy, error) {
 	dec := yamlv3.NewDecoder(bytes.NewReader(data))
 	if err := dec.Decode(&yamlv3.Node{}); err != nil {

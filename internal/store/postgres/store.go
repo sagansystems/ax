@@ -95,6 +95,11 @@ func (s *Store) Close() error {
 	return nil
 }
 
+// Ping checks that the database answers a round trip on a pooled connection.
+func (s *Store) Ping(ctx context.Context) error {
+	return s.pool.Ping(ctx)
+}
+
 func defaultAtespace(atespace string) string {
 	if atespace == "" {
 		return "default"

@@ -20,6 +20,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/google/ax/internal/controller"
 	"github.com/google/ax/internal/lock"
@@ -39,7 +40,15 @@ type Options struct {
 	// Locker serializes changes to a resource. It must be shared by all
 	// ax-server replicas; it defaults to an in-process lock.MemoryLocker.
 	Locker lock.Locker
+	// Ready reports whether the server's dependencies can serve requests.
+	// GET /readyz calls it with a ReadyTimeout deadline and returns 503 if it
+	// fails. If nil, /readyz always returns 200.
+	Ready func(context.Context) error
+	// ReadyTimeout bounds each Ready call. It defaults to 1 second, kubelet's default probe timeout.
+	ReadyTimeout time.Duration
 }
+
+const defaultReadyTimeout = time.Second
 
 // Server provides the gRPC API for AX.
 type Server struct {
@@ -49,8 +58,10 @@ type Server struct {
 	reconciler *controller.TaskReconciler
 	// substrate is the reconciler's client. It is read for the parts of a
 	// task's status owned by its actor, which the store never holds.
-	substrate  *substrate.Client
-	grpcServer *grpc.Server
+	substrate    *substrate.Client
+	grpcServer   *grpc.Server
+	ready        func(context.Context) error
+	readyTimeout time.Duration
 }
 
 // NewServer creates a new AX API server.
@@ -67,12 +78,19 @@ func NewServer(s store.Store, reconciler *controller.TaskReconciler, opts ...Opt
 		locker = lock.NewMemoryLocker()
 	}
 
+	readyTimeout := opt.ReadyTimeout
+	if readyTimeout <= 0 {
+		readyTimeout = defaultReadyTimeout
+	}
+
 	srv := &Server{
-		store:      s,
-		locker:     locker,
-		reconciler: reconciler,
-		substrate:  reconciler.Client(),
-		grpcServer: grpc.NewServer(),
+		store:        s,
+		locker:       locker,
+		reconciler:   reconciler,
+		substrate:    reconciler.Client(),
+		grpcServer:   grpc.NewServer(),
+		ready:        opt.Ready,
+		readyTimeout: readyTimeout,
 	}
 	v1alpha1.RegisterAXServer(srv.grpcServer, srv)
 	return srv
@@ -83,20 +101,38 @@ func (s *Server) GRPCServer() *grpc.Server {
 	return s.grpcServer
 }
 
-// Handler returns the HTTP handler for the server, routing gRPC and HTTP health checks.
+// Handler returns the HTTP handler for the server, routing gRPC and the HTTP
+// health checks: /healthz for liveness and /readyz for readiness.
 func (s *Server) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.ProtoMajor == 2 && strings.HasPrefix(r.Header.Get("Content-Type"), "application/grpc") {
 			s.grpcServer.ServeHTTP(w, r)
 			return
 		}
-		if r.URL.Path == "/healthz" {
+		switch r.URL.Path {
+		case "/healthz":
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("ok\n"))
+		case "/readyz":
+			s.serveReadyz(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+}
+
+func (s *Server) serveReadyz(w http.ResponseWriter, r *http.Request) {
+	if s.ready != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), s.readyTimeout)
+		defer cancel()
+		if err := s.ready(ctx); err != nil {
+			slog.Warn("readiness check failed", "error", err)
+			http.Error(w, "not ready", http.StatusServiceUnavailable)
 			return
 		}
-		http.NotFound(w, r)
-	})
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("ok\n"))
 }
 
 // --- gRPC AXServer implementation ---

@@ -43,7 +43,7 @@ The `/workspace` volume is what survives suspend and resume. Agent Substrate sna
 | `/metadata/v1alpha1/ax/task` | Return the `Task` as `application/yaml`. Optional, but your command and `ax` tooling may expect it. |
 | `/metadata/v1alpha1/ax/workspace` | Return the bound `Workspace` as `application/yaml`, or `404` when there is none. Optional, as above. |
 
-**Prepare the workspace once.** A task binds at most one workspace through `spec.workspace`. At the binding's path, `/workspace` unless it sets one, clone the Git repos from `spec.git`, create the skills path, and write any MCP configuration. A task with no binding gets an empty `/workspace`. Record that setup happened somewhere on the durable volume or in a known location, then skip the work on later boots. Resume restarts the container, and re-cloning into a restored workspace would destroy the agent's state. The default runner writes a marker file under `/ax`.
+**Prepare the workspace once.** A task binds at most one workspace through `spec.workspace`. At the binding's path, `/workspace` unless it sets one, clone the Git repos from `spec.git`, create the skills path, and write any MCP configuration. A task with no binding gets an empty `/workspace`. Record that setup happened somewhere on the durable volume or in a known location, then skip the work on later boots. Resume restarts the container, and re-cloning into a restored workspace would destroy the agent's state. The default runner writes a marker at `.git/.ax/initialized` in the workspace, or `.ax/initialized` when it is not a Git repo.
 
 **Skip setup in the golden boot.** Agent Substrate boots each new ActorTemplate once as a golden actor, named after the template's UID and running without the task's egress policy, then restores every task actor from that snapshot. Setup done in that boot has no network and would be baked into the snapshot. The default runner compares `/run/ate/egress-trust-bundle/name` with the task's `metadata.name` and waits, serving `/healthz` but not `/readyz`, until a restore rewrites the file with the task's name; only then does it set up the workspace and start the command.
 
@@ -71,8 +71,13 @@ There are three levels of customization. Pick the shallowest one that solves you
 
 If the runner behavior is fine and you only need different tools in the sandbox, build on top of the default image and keep its entrypoint:
 
+The image below is private. Build and push your own runner from the same AX
+checkout as the CLI and control plane, then replace `FROM` with its digest
+reference. The [installation guide](installation.md) shows the build steps for
+its pinned baseline.
+
 ```dockerfile
-# Pin the same digest the examples use so the runner behavior is reproducible.
+# Replace this with the digest of the runner built from the same AX checkout.
 FROM gcr.io/ax-substrate/ate-images/ax-task-runner@sha256:69b764607ec7f1e433d83d2eca17dccfa04f663b43f071fd376e2dd716a57f8c
 
 RUN apt-get update && apt-get install -y --no-install-recommends nodejs npm \
@@ -81,6 +86,7 @@ RUN npm install -g my-agent
 ```
 
 The runner binary stays at `/usr/local/bin/ax-task-runner`, so nothing else changes.
+
 
 ### 2. Embed the runner package in your own binary
 
@@ -131,6 +137,8 @@ func main() {
 ```
 
 Cross-compile it for `linux/amd64` with `CGO_ENABLED=0` and copy it into your image at `/usr/local/bin/ax-task-runner`.
+
+For a working example, see [`cmd/runners/claude-code-runner`](../cmd/runners/claude-code-runner), which builds a Claude Code invocation from `spec.config` and passes it to `runner.Run` as the command. [Claude Code runner](../examples/claude-code/README.md) documents it.
 
 ### 3. Write a runner from scratch
 

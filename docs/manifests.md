@@ -1,6 +1,6 @@
 # Writing manifests
 
-All four kinds can live in one multi-document YAML file. See [`examples/task.yaml`](../examples/task.yaml) for a complete, working set.
+All four kinds can live in one multi-document YAML file. The examples below show every kind; [`examples/simple.yaml`](../examples/simple.yaml) is the smallest working Task. [`examples/claude-code/task.yaml`](../examples/claude-code/task.yaml) shows a Task that runs Claude Code headlessly against a cloned repository.
 
 `metadata.name` and `metadata.atespace` become Substrate resource names, so they must be lowercase RFC 1123 labels: at most 63 lowercase alphanumeric characters or `-`, starting and ending with an alphanumeric character. `ax apply` rejects anything else up front rather than letting the task fail later with `ActorCreationFailed`.
 
@@ -40,6 +40,8 @@ Substrate requires `spec.image` to be pinned by digest, e.g. `ghcr.io/my-org/my-
 ### Binding a workspace
 
 A task binds at most one `Workspace` through `spec.workspace`. The binding needs a `name`; without a `path` the workspace is mounted at `/workspace`. That path is the working directory of `spec.command`, and the task reports `WorkspaceReady` once the workspace is prepared. A task with no `workspace` gets an empty working directory at `/workspace`.
+
+The bound `Workspace` must already exist in the task's atespace. Creating a task that binds a missing workspace fails with `FailedPrecondition` and stores nothing. `ax apply` creates documents in file order, so list a `Workspace` before the `Task` that binds it.
 
 To work on content from several sources, put it all in one `Workspace`, for example by listing several repositories under `spec.git` or adding files through `spec.files`.
 

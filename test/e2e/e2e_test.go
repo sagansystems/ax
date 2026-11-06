@@ -191,7 +191,7 @@ func taskManifest(t *testing.T, atespace, name string, debug bool) string {
 // resources stay in sync across its lifecycle:
 //   - A new Task starts Suspended and is immutable.
 //   - Substrate has a suspended Actor backed by a per-task ActorTemplate
-//     (<task>-tmpl-<hash>) with the /readyz:80 wakeup probe and a snapshot config.
+//     (<task>-tmpl-<hash>) with the /healthz:80 wakeup probe and a snapshot config.
 //   - Resuming moves the Task to Running with WorkspaceReady and Ready
 //     conditions, on the worker Substrate reports.
 //   - Deleting the Task removes the Actor and ActorTemplate.
@@ -241,9 +241,8 @@ func TestE2E_TaskLifecycleAndSubstrateSync(t *testing.T) {
 	if probe := tmpl.GetContainers()[0].GetWakeupProbe().GetHttpGet(); probe.GetPath() != "/healthz" || probe.GetPort() != 80 {
 		t.Fatalf("unexpected WakeupProbe: %+v", tmpl.GetContainers()[0].GetWakeupProbe())
 	}
-	// Newer Substrate versions may return SnapshotConfig fields AX's proto does
-	// not know about, so accept either a known storage location or unknown fields.
-	if sc := tmpl.GetSnapshotConfig(); sc.GetStorageLocation() == "" && len(sc.ProtoReflect().GetUnknown()) == 0 {
+	// Verify that the ActorTemplate has a SnapshotConfig set with VOLUMES fidelity.
+	if sc := tmpl.GetSnapshotConfig(); sc == nil || sc.GetPreferredFidelity() != ateapipb.SnapshotFidelity_SNAPSHOT_FIDELITY_VOLUMES {
 		t.Fatalf("unexpected SnapshotConfig: %+v", sc)
 	}
 
@@ -404,7 +403,7 @@ spec:
 // TestE2E_WorkspaceSetup_FilesAndGit verifies workspace setup for a task:
 // custom mount path (/workspace/primary), working directory set to the mount
 // path, spec.git checkout at a tag, overlay spec.files, spec.skills.path, and
-// the /ax/initialized-* maiden-run marker.
+// the .ax/initialized maiden-run marker in the workspace.
 func TestE2E_WorkspaceSetup_FilesAndGit(t *testing.T) {
 	ns := defaultAtespace
 	wsGit := uniqueName("ws-git")
@@ -426,7 +425,7 @@ pwd
 cat /workspace/primary/app.py
 cat /workspace/primary/overlay/config.yaml
 test -d /workspace/primary/.agents/skills && echo SKILLS_DIR_OK
-test -f /ax/initialized-workspace-primary && echo MARKERS_OK
+test -f /workspace/primary/.git/.ax/initialized && echo MARKERS_OK
 `)
 	assertContains(t, "workspace setup check", out,
 		"/workspace/primary",
@@ -435,6 +434,82 @@ test -f /ax/initialized-workspace-primary && echo MARKERS_OK
 		"SKILLS_DIR_OK",
 		"MARKERS_OK",
 	)
+}
+
+const egressPolicyTemplate = `rules:
+- https:
+    hostnames: ["{{.Host}}"]
+`
+
+// TestE2E_EgressPolicyAndTrustBundle verifies that the atespace's
+// ax-egress-policy ConfigMap becomes the actor's egress policy on every
+// Suspend and Resume, and that the system-info volume at
+// /run/ate/egress-trust-bundle holds the actor's name and atespace and a trust
+// bundle that verifies the egress gateway's intercepted TLS.
+func TestE2E_EgressPolicyAndTrustBundle(t *testing.T) {
+	ns := uniqueName("egress-e2e")
+	task := uniqueName("task-egress")
+	const allowed, denied = "example.com", "www.google.com"
+
+	if out, err := env.kubectl("create", "namespace", ns); err != nil {
+		t.Fatalf("kubectl create namespace %s: %v\n%s", ns, err, out)
+	}
+	t.Cleanup(func() { _, _ = env.kubectl("delete", "namespace", ns, "--wait=false") })
+	setPolicy := func(host string) {
+		t.Helper()
+		policy := renderYAML(t, egressPolicyTemplate, map[string]string{"Host": host})
+		manifest, err := env.kubectl("-n", ns, "create", "configmap", "ax-egress-policy",
+			"--from-literal=policy.yaml="+policy, "--dry-run=client", "-o", "yaml")
+		if err != nil {
+			t.Fatalf("rendering ax-egress-policy: %v\n%s", err, manifest)
+		}
+		if out, err := env.kubectl("apply", "-f", writeManifest(t, manifest)); err != nil {
+			t.Fatalf("kubectl apply ax-egress-policy: %v\n%s", err, out)
+		}
+	}
+	setPolicy(allowed)
+
+	env.deleteOnCleanup(t, ns, "task", task)
+	env.apply(t, ns, taskManifest(t, ns, task, true))
+	assertCondition(t, env.getTask(t, ns, task), "EgressPolicyApplied", "True", "EgressPolicyApplied")
+	env.mustRunAX(t, ns, "resume", "task", task)
+	assertCondition(t, env.getTask(t, ns, task), "EgressPolicyApplied", "True", "EgressPolicyApplied")
+
+	const dir = "/run/ate/egress-trust-bundle"
+	fetch := func(host string) string {
+		return fmt.Sprintf(`code=$(curl -sS -o /dev/null -w '%%{http_code}' --max-time 20 --cacert %s/trust-bundle.pem https://%s/); echo "%s=exit$?:$code"`,
+			dir, host, host)
+	}
+	ok := func(host string) string { return host + "=exit0:200" }
+	// curl exit 6: the sandbox's DNS relay answers NXDOMAIN for hosts outside the policy.
+	blocked := func(host string) string { return host + "=exit6:" }
+	out := env.ssh(t, ns, task, fmt.Sprintf(`echo NAME=$(cat %[1]s/name) ATESPACE=$(cat %[1]s/atespace)
+grep -q 'BEGIN CERTIFICATE' %[1]s/trust-bundle.pem && echo BUNDLE_OK
+%[2]s
+%[3]s
+`, dir, fetch(allowed), fetch(denied)))
+	assertContains(t, "egress check", out, "NAME="+task, "ATESPACE="+ns, "BUNDLE_OK", ok(allowed), blocked(denied))
+
+	// A changed ConfigMap reaches the actor on the next Suspend and Resume.
+	setPolicy(denied)
+	env.mustRunAX(t, ns, "suspend", "task", task)
+	env.mustRunAX(t, ns, "resume", "task", task)
+	// The egress gateway caches an actor's policy for 10s (--egress-policy-cache-ttl).
+	err := poll(60*time.Second, 5*time.Second, func() error {
+		out, err := env.runAX(ns, "ssh", task, "--", "sh", "-c", fetch(allowed)+"\n"+fetch(denied)+"\n")
+		if err != nil {
+			return fmt.Errorf("%w: %s", err, out)
+		}
+		for _, want := range []string{blocked(allowed), ok(denied)} {
+			if !strings.Contains(out, want) {
+				return fmt.Errorf("want %q, got:\n%s", want, out)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("egress check after policy change: %v", err)
+	}
 }
 
 const persistenceManifest = `apiVersion: ax.io/v1alpha1

@@ -263,7 +263,7 @@ func TestRun_SetsUpBoundWorkspace(t *testing.T) {
 	if st, err := os.Stat(codePath); err != nil || !st.IsDir() {
 		t.Errorf("workspace dir %s missing: %v", codePath, err)
 	}
-	marker := filepath.Join(workspace.AXDir, workspace.MarkerName(codePath))
+	marker := filepath.Join(codePath, ".ax", workspace.InitializedMarkerFilename)
 	if _, err := os.Stat(marker); err != nil {
 		t.Errorf("marker %s missing: %v", marker, err)
 	}
@@ -304,7 +304,7 @@ func TestRun_DefersSetupInGoldenBoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.task.Spec.Command = []string{"true"}
-	marker := filepath.Join(workspace.AXDir, workspace.MarkerName(h.wsPath))
+	marker := filepath.Join(h.wsPath, ".ax", workspace.InitializedMarkerFilename)
 
 	h.start(t)
 	waitHealthy(t, h.cfg.Port)
@@ -349,7 +349,7 @@ func TestRun_SetsUpWhenNameMatchesTask(t *testing.T) {
 	if exit := h.runUntilCommandExits(t); exit.Err != nil {
 		t.Fatalf("unexpected exit: %+v", exit)
 	}
-	if _, err := os.Stat(filepath.Join(workspace.AXDir, workspace.MarkerName(h.wsPath))); err != nil {
+	if _, err := os.Stat(filepath.Join(h.wsPath, ".ax", workspace.InitializedMarkerFilename)); err != nil {
 		t.Errorf("setup marker missing: %v", err)
 	}
 }

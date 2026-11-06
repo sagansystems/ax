@@ -33,7 +33,7 @@ PostgreSQL holds resources as protojson documents alongside the leases that back
 
 ## API reference
 
-The control plane exposes the `ax.v1alpha1.AX` gRPC service. Health checks are plain HTTP: `GET /healthz` on the same port returns `200 OK`.
+The control plane exposes the `ax.v1alpha1.AX` gRPC service. Health checks are plain HTTP on the same port: `GET /healthz` (liveness) always returns `200 OK`, and `GET /readyz` (readiness) returns `200 OK` only while ax-server can reach PostgreSQL, `503` otherwise.
 
 **Tasks**
 

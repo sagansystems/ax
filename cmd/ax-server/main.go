@@ -113,6 +113,7 @@ func main() {
 	reconciler := controller.NewTaskReconciler(subClient, defaultTemplate, defaultTemplateAtespace, defaultTaskImage)
 	srv := server.NewServer(backend, reconciler, server.Options{
 		Locker: backend,
+		Ready:  backend.Ping,
 	})
 
 	httpServer := &http.Server{

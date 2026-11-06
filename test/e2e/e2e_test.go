@@ -494,8 +494,22 @@ grep -q 'BEGIN CERTIFICATE' %[1]s/trust-bundle.pem && echo BUNDLE_OK
 	setPolicy(denied)
 	env.mustRunAX(t, ns, "suspend", "task", task)
 	env.mustRunAX(t, ns, "resume", "task", task)
-	out = env.ssh(t, ns, task, fetch(allowed)+"\n"+fetch(denied)+"\n")
-	assertContains(t, "egress check after policy change", out, blocked(allowed), ok(denied))
+	// The egress gateway caches an actor's policy for 10s (--egress-policy-cache-ttl).
+	err := poll(60*time.Second, 5*time.Second, func() error {
+		out, err := env.runAX(ns, "ssh", task, "--", "sh", "-c", fetch(allowed)+"\n"+fetch(denied)+"\n")
+		if err != nil {
+			return fmt.Errorf("%w: %s", err, out)
+		}
+		for _, want := range []string{blocked(allowed), ok(denied)} {
+			if !strings.Contains(out, want) {
+				return fmt.Errorf("want %q, got:\n%s", want, out)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("egress check after policy change: %v", err)
+	}
 }
 
 const persistenceManifest = `apiVersion: ax.io/v1alpha1

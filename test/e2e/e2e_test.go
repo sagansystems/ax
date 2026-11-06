@@ -477,22 +477,25 @@ func TestE2E_EgressPolicyAndTrustBundle(t *testing.T) {
 
 	const dir = "/run/ate/egress-trust-bundle"
 	fetch := func(host string) string {
-		return fmt.Sprintf("curl -sS -o /dev/null -w '%s=%%{http_code}\\n' --max-time 20 --cacert %s/trust-bundle.pem https://%s/ || echo %s=failed",
-			host, dir, host, host)
+		return fmt.Sprintf(`code=$(curl -sS -o /dev/null -w '%%{http_code}' --max-time 20 --cacert %s/trust-bundle.pem https://%s/); echo "%s=exit$?:$code"`,
+			dir, host, host)
 	}
+	ok := func(host string) string { return host + "=exit0:200" }
+	// curl exit 6: the sandbox's DNS relay answers NXDOMAIN for hosts outside the policy.
+	blocked := func(host string) string { return host + "=exit6:" }
 	out := env.ssh(t, ns, task, fmt.Sprintf(`echo NAME=$(cat %[1]s/name) ATESPACE=$(cat %[1]s/atespace)
 grep -q 'BEGIN CERTIFICATE' %[1]s/trust-bundle.pem && echo BUNDLE_OK
 %[2]s
 %[3]s
 `, dir, fetch(allowed), fetch(denied)))
-	assertContains(t, "egress check", out, "NAME="+task, "ATESPACE="+ns, "BUNDLE_OK", allowed+"=200", denied+"=failed")
+	assertContains(t, "egress check", out, "NAME="+task, "ATESPACE="+ns, "BUNDLE_OK", ok(allowed), blocked(denied))
 
 	// A changed ConfigMap reaches the actor on the next Suspend and Resume.
 	setPolicy(denied)
 	env.mustRunAX(t, ns, "suspend", "task", task)
 	env.mustRunAX(t, ns, "resume", "task", task)
 	out = env.ssh(t, ns, task, fetch(allowed)+"\n"+fetch(denied)+"\n")
-	assertContains(t, "egress check after policy change", out, allowed+"=failed", denied+"=200")
+	assertContains(t, "egress check after policy change", out, blocked(allowed), ok(denied))
 }
 
 const persistenceManifest = `apiVersion: ax.io/v1alpha1

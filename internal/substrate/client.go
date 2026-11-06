@@ -225,8 +225,7 @@ const (
 	// egressPolicyName is the name of an actor's singleton egress policy.
 	egressPolicyName = "default"
 
-	DefaultGuestCommand    = "/usr/local/bin/ax-task-runner"
-	DefaultSnapshotsBucket = "gs://dberkov-gke-dev3/ate-env/"
+	DefaultGuestCommand = "/usr/local/bin/ax-task-runner"
 
 	// defaultRetryAttempts is the maximum number of calls retryOnCodes makes. With
 	// exponential backoff from defaultRetryInterval capped at maxRetryInterval
@@ -338,6 +337,10 @@ func ResourceLimits(reqs *v1alpha1.ResourcesSpec) *ateapipb.ResourceRequirements
 
 // BuildActorTemplate constructs a Substrate ActorTemplate based on the standard ate-env specification.
 // A nil resources applies DefaultCPUMillicores and DefaultMemoryBytes.
+// snapshotsBucket sets the template-level snapshot storage location; note that Substrate rejects
+// a non-empty storage_location with InvalidArgument (Forbidden) unless the Substrate cluster has
+// the PerTemplateSnapshotLocation preview feature gate enabled. Leaving snapshotsBucket empty uses
+// Substrate's cluster-wide snapshot storage location.
 func BuildActorTemplate(atespace, name, image string, envMap map[string]string, command []string, snapshotsBucket string, resources *ateapipb.ResourceRequirements) *ateapipb.ActorTemplate {
 	if atespace == "" {
 		atespace = "default"
@@ -348,14 +351,6 @@ func BuildActorTemplate(atespace, name, image string, envMap map[string]string, 
 	if len(command) == 0 {
 		command = []string{DefaultGuestCommand}
 	}
-	if snapshotsBucket == "" {
-		if envBucket := os.Getenv("AX_SNAPSHOTS_BUCKET"); envBucket != "" {
-			snapshotsBucket = envBucket
-		} else {
-			snapshotsBucket = DefaultSnapshotsBucket
-		}
-	}
-
 	var envList []*ateapipb.EnvVar
 	for k, v := range envMap {
 		envList = append(envList, &ateapipb.EnvVar{
@@ -373,6 +368,13 @@ func BuildActorTemplate(atespace, name, image string, envMap map[string]string, 
 		if limits.GetMemoryBytes() > 0 {
 			memoryBytes = limits.GetMemoryBytes()
 		}
+	}
+
+	snapCfg := &ateapipb.SnapshotConfig{
+		PreferredFidelity: ateapipb.SnapshotFidelity_SNAPSHOT_FIDELITY_VOLUMES,
+	}
+	if snapshotsBucket != "" {
+		snapCfg.StorageLocation = snapshotsBucket
 	}
 
 	return &ateapipb.ActorTemplate{
@@ -425,10 +427,7 @@ func BuildActorTemplate(atespace, name, image string, envMap map[string]string, 
 				}},
 			},
 		}},
-		SnapshotConfig: &ateapipb.SnapshotConfig{
-			StorageLocation:   snapshotsBucket,
-			PreferredFidelity: ateapipb.SnapshotFidelity_SNAPSHOT_FIDELITY_VOLUMES,
-		},
+		SnapshotConfig: snapCfg,
 		Resources: &ateapipb.ResourceRequirements{
 			Limits: &ateapipb.Resources{
 				CpuMillicores: cpuMillicores,

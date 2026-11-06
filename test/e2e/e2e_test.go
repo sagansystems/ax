@@ -241,9 +241,8 @@ func TestE2E_TaskLifecycleAndSubstrateSync(t *testing.T) {
 	if probe := tmpl.GetContainers()[0].GetWakeupProbe().GetHttpGet(); probe.GetPath() != "/healthz" || probe.GetPort() != 80 {
 		t.Fatalf("unexpected WakeupProbe: %+v", tmpl.GetContainers()[0].GetWakeupProbe())
 	}
-	// Newer Substrate versions may return SnapshotConfig fields AX's proto does
-	// not know about, so accept either a known storage location or unknown fields.
-	if sc := tmpl.GetSnapshotConfig(); sc.GetStorageLocation() == "" && len(sc.ProtoReflect().GetUnknown()) == 0 {
+	// Verify that the ActorTemplate has a SnapshotConfig set with VOLUMES fidelity.
+	if sc := tmpl.GetSnapshotConfig(); sc == nil || sc.GetPreferredFidelity() != ateapipb.SnapshotFidelity_SNAPSHOT_FIDELITY_VOLUMES {
 		t.Fatalf("unexpected SnapshotConfig: %+v", sc)
 	}
 
@@ -404,7 +403,7 @@ spec:
 // TestE2E_WorkspaceSetup_FilesAndGit verifies workspace setup for a task:
 // custom mount path (/workspace/primary), working directory set to the mount
 // path, spec.git checkout at a tag, overlay spec.files, spec.skills.path, and
-// the /ax/initialized-* maiden-run marker.
+// the .ax/initialized maiden-run marker in the workspace.
 func TestE2E_WorkspaceSetup_FilesAndGit(t *testing.T) {
 	ns := defaultAtespace
 	wsGit := uniqueName("ws-git")
@@ -426,7 +425,7 @@ pwd
 cat /workspace/primary/app.py
 cat /workspace/primary/overlay/config.yaml
 test -d /workspace/primary/.agents/skills && echo SKILLS_DIR_OK
-test -f /ax/initialized-workspace-primary && echo MARKERS_OK
+test -f /workspace/primary/.git/.ax/initialized && echo MARKERS_OK
 `)
 	assertContains(t, "workspace setup check", out,
 		"/workspace/primary",

@@ -18,7 +18,7 @@ and `hack/setup-e2e-kind.sh` if they look stale.
 
 | Module | Pinned | Provides | Imported by |
 |---|---|---|---|
-| `go.ate.dev/substrate` | `v1.0.0-rc.1` | Control API protos `api/ateapi/v1` (atespaces, actor templates, actors, suspend/resume) | `internal/substrate`, `internal/server`, `internal/controller`, `test/e2e` |
+| `go.ate.dev/substrate` | `v1.0.0` | Control API protos `api/ateapi/v1` (atespaces, actor templates, actors, suspend/resume) | `internal/substrate`, `internal/server`, `internal/controller`, `test/e2e` |
 | `github.com/agent-substrate/env` | `v0.0.11-0.20260912052224-4468a200b170` (pseudo-version) | Guest services served inside the sandbox (process exec + file system gRPC) and `proto/ateenv/v1alpha` | `internal/guest`, `internal/metadata` |
 
 There is no `replace` directive for either module. Local hacking against a
@@ -36,8 +36,8 @@ All Control API traffic goes through this package. It encapsulates:
   from `SUBSTRATE_CA_FILE`.
 - **Retry** — `IsTransientError` + `retryOnCodes` for `Unavailable`-class errors.
 - **Helpers** the reconciler relies on — `EnsureAtespace`, `EnsureActorTemplateWithImage`,
-  `EnsureActor`, `SuspendActor`, `ResumeActor`, `DeleteActor`, `WorkerIP`,
-  `ResourceLimits`, `BuildActorTemplate`.
+  `EnsureActor`, `EnsureActorEgressPolicy`, `SuspendActor`, `ResumeActor`,
+  `DeleteActor`, `WorkerIP`, `ResourceLimits`, `BuildActorTemplate`.
 
 ### Where a new Control API call lives today
 
@@ -98,9 +98,21 @@ instead. No mocking library is in `go.mod`.
 - Guest services (process + fs) are mounted by `internal/metadata/server.go`
   only when `task.Spec.Debug` is true; `ax ssh` (`cmd/ax/main.go`) refuses to
   connect otherwise.
-- Readiness: Substrate and the reconciler probe the runner on port 80
-  (`/healthz`, `/readyz?check=workspace`, served by `internal/metadata`);
-  `/readyz` is 503 until all workspaces are materialized (`docs/sandbox.md`).
+- Readiness: the ActorTemplate wakeup probe is `/healthz` on port 80, because
+  Substrate enables egress only once it passes and workspace setup needs
+  egress; the reconciler then polls `/readyz?check=workspace` (both served by
+  `internal/metadata`). `/readyz` is 503 until all workspaces are materialized
+  (`docs/sandbox.md`).
+- Egress policy: `ensureSubstrateResources` (so every `Suspend` and `Resume`)
+  writes the atespace's `ax-egress-policy` ConfigMap, read from the Kubernetes
+  namespace named after the atespace, as the actor's `default` egress policy
+  (`internal/controller/egress.go`); the result is the task's
+  `EgressPolicyApplied` condition. No ConfigMap leaves the actor's policy alone.
+- System info volume: every task ActorTemplate mounts a `systemInfo` volume at
+  `substrate.SystemInfoMountPath` (`/run/ate/egress-trust-bundle`) with
+  `trust-bundle.pem` (egress MITM CA plus system roots), `atespace` and `name`.
+  The runner (`runner/runner.go`, `waitForTaskActor`) skips workspace setup
+  while `name` is not the task's name, i.e. in the template's golden boot.
 - Snapshot storage: Actor templates created by AX leave `SnapshotConfig.StorageLocation`
   empty by default so Substrate uses its cluster-wide `--snapshot-location`. Specifying a custom
   snapshot bucket (`snapshotsBucket` in `BuildActorTemplate`) can only be used when the

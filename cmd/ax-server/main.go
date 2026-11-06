@@ -48,6 +48,8 @@ func main() {
 		defaultTemplate         string
 		defaultTemplateAtespace string
 		defaultTaskImage        string
+		maxConnAge              time.Duration
+		maxConnAgeGrace         time.Duration
 	)
 
 	flag.StringVar(&listenAddr, "addr", ":8080", "HTTP listen address")
@@ -61,6 +63,8 @@ func main() {
 	flag.StringVar(&defaultTemplate, "template", "default-template", "Default Substrate ActorTemplate name")
 	flag.StringVar(&defaultTemplateAtespace, "template-atespace", v1alpha1.DefaultSystemNamespace, "Default Substrate ActorTemplate atespace")
 	flag.StringVar(&defaultTaskImage, "default-task-image", v1alpha1.DefaultTaskImage, "Container image for tasks that do not set spec.image (env: AX_DEFAULT_TASK_IMAGE)")
+	flag.DurationVar(&maxConnAge, "max-connection-age", 5*time.Minute, "Ask clients to reconnect after a connection is this old, plus or minus 10%, so they spread across replicas. 0 disables")
+	flag.DurationVar(&maxConnAgeGrace, "max-connection-age-grace", time.Minute, "Close a connection this long after --max-connection-age, even with requests still running. 0 waits for them")
 	flag.Parse()
 
 	if envAddr := os.Getenv("ADDR"); envAddr != "" {
@@ -85,6 +89,8 @@ func main() {
 		"substrateEndpoint", substrateEndpoint,
 		"template", defaultTemplate,
 		"defaultTaskImage", defaultTaskImage,
+		"maxConnectionAge", maxConnAge,
+		"maxConnectionAgeGrace", maxConnAgeGrace,
 	)
 
 	openCtx, openCancel := context.WithTimeout(context.Background(), time.Minute)
@@ -123,6 +129,7 @@ func main() {
 	httpServer.Protocols = new(http.Protocols)
 	httpServer.Protocols.SetHTTP1(true)
 	httpServer.Protocols.SetUnencryptedHTTP2(true)
+	server.ConnectionAge{MaxAge: maxConnAge, Grace: maxConnAgeGrace}.Apply(httpServer)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()

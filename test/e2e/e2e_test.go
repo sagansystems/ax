@@ -191,7 +191,7 @@ func taskManifest(t *testing.T, atespace, name string, debug bool) string {
 // resources stay in sync across its lifecycle:
 //   - A new Task starts Suspended and is immutable.
 //   - Substrate has a suspended Actor backed by a per-task ActorTemplate
-//     (<task>-tmpl-<hash>) with the /readyz:80 wakeup probe and a snapshot config.
+//     (<task>-tmpl-<hash>) with the /healthz:80 wakeup probe and a snapshot config.
 //   - Resuming moves the Task to Running with WorkspaceReady and Ready
 //     conditions, on the worker Substrate reports.
 //   - Deleting the Task removes the Actor and ActorTemplate.
@@ -434,6 +434,65 @@ test -f /workspace/primary/.git/.ax/initialized && echo MARKERS_OK
 		"SKILLS_DIR_OK",
 		"MARKERS_OK",
 	)
+}
+
+const egressPolicyTemplate = `rules:
+- https:
+    hostnames: ["{{.Host}}"]
+`
+
+// TestE2E_EgressPolicyAndTrustBundle verifies that the atespace's
+// ax-egress-policy ConfigMap becomes the actor's egress policy on every
+// Suspend and Resume, and that the system-info volume at
+// /run/ate/egress-trust-bundle holds the actor's name and atespace and a trust
+// bundle that verifies the egress gateway's intercepted TLS.
+func TestE2E_EgressPolicyAndTrustBundle(t *testing.T) {
+	ns := uniqueName("egress-e2e")
+	task := uniqueName("task-egress")
+	const allowed, denied = "example.com", "www.google.com"
+
+	if out, err := env.kubectl("create", "namespace", ns); err != nil {
+		t.Fatalf("kubectl create namespace %s: %v\n%s", ns, err, out)
+	}
+	t.Cleanup(func() { _, _ = env.kubectl("delete", "namespace", ns, "--wait=false") })
+	setPolicy := func(host string) {
+		t.Helper()
+		policy := renderYAML(t, egressPolicyTemplate, map[string]string{"Host": host})
+		manifest, err := env.kubectl("-n", ns, "create", "configmap", "ax-egress-policy",
+			"--from-literal=policy.yaml="+policy, "--dry-run=client", "-o", "yaml")
+		if err != nil {
+			t.Fatalf("rendering ax-egress-policy: %v\n%s", err, manifest)
+		}
+		if out, err := env.kubectl("apply", "-f", writeManifest(t, manifest)); err != nil {
+			t.Fatalf("kubectl apply ax-egress-policy: %v\n%s", err, out)
+		}
+	}
+	setPolicy(allowed)
+
+	env.deleteOnCleanup(t, ns, "task", task)
+	env.apply(t, ns, taskManifest(t, ns, task, true))
+	assertCondition(t, env.getTask(t, ns, task), "EgressPolicyApplied", "True", "EgressPolicyApplied")
+	env.mustRunAX(t, ns, "resume", "task", task)
+	assertCondition(t, env.getTask(t, ns, task), "EgressPolicyApplied", "True", "EgressPolicyApplied")
+
+	const dir = "/run/ate/egress-trust-bundle"
+	fetch := func(host string) string {
+		return fmt.Sprintf("curl -sS -o /dev/null -w '%s=%%{http_code}\\n' --max-time 20 --cacert %s/trust-bundle.pem https://%s/ || echo %s=failed",
+			host, dir, host, host)
+	}
+	out := env.ssh(t, ns, task, fmt.Sprintf(`echo NAME=$(cat %[1]s/name) ATESPACE=$(cat %[1]s/atespace)
+grep -q 'BEGIN CERTIFICATE' %[1]s/trust-bundle.pem && echo BUNDLE_OK
+%[2]s
+%[3]s
+`, dir, fetch(allowed), fetch(denied)))
+	assertContains(t, "egress check", out, "NAME="+task, "ATESPACE="+ns, "BUNDLE_OK", allowed+"=200", denied+"=failed")
+
+	// A changed ConfigMap reaches the actor on the next Suspend and Resume.
+	setPolicy(denied)
+	env.mustRunAX(t, ns, "suspend", "task", task)
+	env.mustRunAX(t, ns, "resume", "task", task)
+	out = env.ssh(t, ns, task, fetch(allowed)+"\n"+fetch(denied)+"\n")
+	assertContains(t, "egress check after policy change", out, allowed+"=failed", denied+"=200")
 }
 
 const persistenceManifest = `apiVersion: ax.io/v1alpha1

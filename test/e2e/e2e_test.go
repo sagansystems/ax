@@ -490,12 +490,10 @@ grep -q 'BEGIN CERTIFICATE' %[1]s/trust-bundle.pem && echo BUNDLE_OK
 `, dir, fetch(allowed), fetch(denied)))
 	assertContains(t, "egress check", out, "NAME="+task, "ATESPACE="+ns, "BUNDLE_OK", ok(allowed), blocked(denied))
 
-	// A changed ConfigMap reaches the actor on the next Suspend and Resume.
+	// A changed ConfigMap reaches the Running actor within --egress-policy-resync-interval (5s in e2e),
+	// plus the egress gateway's 10s policy cache (--egress-policy-cache-ttl).
 	setPolicy(denied)
-	env.mustRunAX(t, ns, "suspend", "task", task)
-	env.mustRunAX(t, ns, "resume", "task", task)
-	// The egress gateway caches an actor's policy for 10s (--egress-policy-cache-ttl).
-	err := poll(60*time.Second, 5*time.Second, func() error {
+	err := poll(90*time.Second, 5*time.Second, func() error {
 		out, err := env.runAX(ns, "ssh", task, "--", "sh", "-c", fetch(allowed)+"\n"+fetch(denied)+"\n")
 		if err != nil {
 			return fmt.Errorf("%w: %s", err, out)

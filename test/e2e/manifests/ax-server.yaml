@@ -61,6 +61,7 @@ spec:
             - "--substrate-ca-file=/run/servicedns-ca/trust-bundle.pem"
             - "--template=default-template"
             - "--template-atespace=${AX_SYSTEM_NAMESPACE}"
+            - "--egress-policy-resync-interval=5s"
           env:
             - name: PGPASSWORD
               valueFrom:

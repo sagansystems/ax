@@ -50,6 +50,7 @@ func main() {
 		defaultTaskImage        string
 		maxConnAge              time.Duration
 		maxConnAgeGrace         time.Duration
+		egressResyncInterval    time.Duration
 	)
 
 	flag.StringVar(&listenAddr, "addr", ":8080", "HTTP listen address")
@@ -65,6 +66,7 @@ func main() {
 	flag.StringVar(&defaultTaskImage, "default-task-image", v1alpha1.DefaultTaskImage, "Container image for tasks that do not set spec.image (env: AX_DEFAULT_TASK_IMAGE)")
 	flag.DurationVar(&maxConnAge, "max-connection-age", 5*time.Minute, "Ask clients to reconnect after a connection is this old, plus or minus 10%, so they spread across replicas. 0 disables")
 	flag.DurationVar(&maxConnAgeGrace, "max-connection-age-grace", time.Minute, "Close a connection this long after --max-connection-age, even with requests still running. 0 waits for them")
+	flag.DurationVar(&egressResyncInterval, "egress-policy-resync-interval", time.Minute, "How often to apply each atespace's ax-egress-policy ConfigMap to its Running tasks. 0 disables")
 	flag.Parse()
 
 	if envAddr := os.Getenv("ADDR"); envAddr != "" {
@@ -133,6 +135,10 @@ func main() {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+
+	if egressResyncInterval > 0 {
+		go srv.ResyncEgressPolicies(ctx, egressResyncInterval)
+	}
 
 	go func() {
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {

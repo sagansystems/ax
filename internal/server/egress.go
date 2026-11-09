@@ -51,13 +51,14 @@ func (s *Server) resyncEgressPolicies(ctx context.Context) {
 			slog.Warn("egress policy resync: listing tasks", "error", err)
 			return
 		}
+		// the postgres store drops unreadable rows, so a short page is not the last one
+		if len(tasks) == 0 {
+			return
+		}
 		for _, t := range tasks {
 			if t.GetStatus().GetPhase() == v1alpha1.PhaseRunning {
 				s.resyncTaskEgressPolicy(ctx, t.GetMetadata().GetAtespace(), t.GetMetadata().GetName())
 			}
-		}
-		if len(tasks) < egressResyncPageSize {
-			return
 		}
 	}
 }

@@ -26,14 +26,17 @@ import (
 	"github.com/google/ax/internal/store/memory"
 	"github.com/google/ax/internal/substrate/substratetest"
 	"github.com/google/ax/pkg/apis/v1alpha1"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestServer_ResyncEgressPolicies_UpdatesRunningTasksOnly(t *testing.T) {
 	st := memory.NewStore()
 	reconciler := newTestReconciler(substratetest.NewServer(t))
 	var configMapErr atomic.Pointer[error]
+	var reads atomic.Int32
 	reconciler.ConfigMapResolver = func(context.Context, string, string) (map[string]string, error) {
 		if err := configMapErr.Load(); err != nil {
+			reads.Add(1)
 			return nil, *err
 		}
 		return nil, controller.ErrConfigMapNotFound
@@ -56,16 +59,6 @@ func TestServer_ResyncEgressPolicies_UpdatesRunningTasksOnly(t *testing.T) {
 		t.Fatalf("SuspendTask: %v", err)
 	}
 
-	readErr := errors.New("connection refused")
-	configMapErr.Store(&readErr)
-	resyncCtx, cancel := context.WithCancel(ctx)
-	done := make(chan struct{})
-	go func() {
-		srv.ResyncEgressPolicies(resyncCtx, 10*time.Millisecond)
-		close(done)
-	}()
-	defer func() { cancel(); <-done }()
-
 	egressCondition := func(name string) *v1alpha1.Condition {
 		t.Helper()
 		task, err := st.GetTask(ctx, "default", name)
@@ -80,14 +73,24 @@ func TestServer_ResyncEgressPolicies_UpdatesRunningTasksOnly(t *testing.T) {
 		return nil
 	}
 
-	deadline := time.Now().Add(5 * time.Second)
-	for egressCondition("egress-running") == nil && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
+	readErr := errors.New("connection refused")
+	configMapErr.Store(&readErr)
+	srv.ResyncEgressPoliciesOnce(ctx)
+
+	if got := reads.Load(); got != 1 {
+		t.Errorf("ConfigMap reads in one pass = %d, want 1 (the Running task only)", got)
 	}
-	if c := egressCondition("egress-running"); c.GetStatus() != "False" || c.GetReason() != "ConfigMapUnavailable" {
-		t.Fatalf("running task EgressPolicyApplied = %v, want False (ConfigMapUnavailable)", c)
+	first := egressCondition("egress-running")
+	if first.GetStatus() != "False" || first.GetReason() != "ConfigMapUnavailable" {
+		t.Fatalf("running task EgressPolicyApplied = %v, want False (ConfigMapUnavailable)", first)
 	}
 	if c := egressCondition("egress-suspended"); c != nil {
 		t.Errorf("suspended task EgressPolicyApplied = %v, want none", c)
+	}
+
+	time.Sleep(10 * time.Millisecond)
+	srv.ResyncEgressPoliciesOnce(ctx)
+	if got := egressCondition("egress-running"); !proto.Equal(got, first) {
+		t.Errorf("EgressPolicyApplied after an unchanged pass = %v, want it unchanged from %v", got, first)
 	}
 }

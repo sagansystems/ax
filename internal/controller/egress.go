@@ -58,7 +58,7 @@ type ConfigMapResolver func(ctx context.Context, namespace, name string) (map[st
 
 // ReconcileEgressPolicy applies the atespace's ax-egress-policy ConfigMap to
 // the task's existing actor. It reports whether the task's EgressPolicyApplied
-// condition changed, ignoring its update time.
+// condition changed; an unchanged condition keeps its update time.
 func (r *TaskReconciler) ReconcileEgressPolicy(ctx context.Context, task *v1alpha1.Task) bool {
 	if task.Status == nil {
 		task.Status = &v1alpha1.TaskStatus{}
@@ -66,7 +66,13 @@ func (r *TaskReconciler) ReconcileEgressPolicy(ctx context.Context, task *v1alph
 	before := proto.Clone(findCondition(task, condEgressPolicy)).(*v1alpha1.Condition)
 	r.reconcileEgressPolicy(ctx, task, task.GetMetadata().GetAtespace(), task.GetMetadata().GetName())
 	after := findCondition(task, condEgressPolicy)
-	return before.GetStatus() != after.GetStatus() || before.GetReason() != after.GetReason() || before.GetMessage() != after.GetMessage()
+	if before.GetStatus() != after.GetStatus() || before.GetReason() != after.GetReason() || before.GetMessage() != after.GetMessage() {
+		return true
+	}
+	if after != nil {
+		after.UpdateTime = before.GetUpdateTime()
+	}
+	return false
 }
 
 func findCondition(task *v1alpha1.Task, condType string) *v1alpha1.Condition {

@@ -321,9 +321,14 @@ func TestReconcileEgressPolicy_ReappliesChangedConfigMapToRunningTask(t *testing
 		t.Fatalf("Resume failed: %v", err)
 	}
 	resumed := findCondition(task, "EgressPolicyApplied").GetMessage()
+	resumedAt := proto.Clone(findCondition(task, "EgressPolicyApplied").GetUpdateTime())
 
+	time.Sleep(10 * time.Millisecond)
 	if r.ReconcileEgressPolicy(ctx, task) {
 		t.Errorf("ReconcileEgressPolicy reported a change for an unchanged ConfigMap")
+	}
+	if got := findCondition(task, "EgressPolicyApplied").GetUpdateTime(); !proto.Equal(got, resumedAt) {
+		t.Errorf("condition update time = %v after an unchanged reconcile, want %v", got.AsTime(), resumedAt)
 	}
 	if len(srv.updates) != 0 {
 		t.Errorf("expected no update for an unchanged ConfigMap, got %d", len(srv.updates))

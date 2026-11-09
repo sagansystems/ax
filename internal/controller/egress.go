@@ -17,8 +17,10 @@ package controller
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -34,6 +36,7 @@ import (
 	"github.com/google/ax/pkg/apis/v1alpha1"
 	ateapipb "go.ate.dev/substrate/api/ateapi/v1"
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 	yamlv3 "gopkg.in/yaml.v3"
 	"sigs.k8s.io/yaml"
 )
@@ -52,6 +55,28 @@ var ErrConfigMapNotFound = errors.New("configmap not found")
 
 // ConfigMapResolver returns the data of a Kubernetes ConfigMap.
 type ConfigMapResolver func(ctx context.Context, namespace, name string) (map[string]string, error)
+
+// ReconcileEgressPolicy applies the atespace's ax-egress-policy ConfigMap to
+// the task's existing actor. It reports whether the task's EgressPolicyApplied
+// condition changed, ignoring its update time.
+func (r *TaskReconciler) ReconcileEgressPolicy(ctx context.Context, task *v1alpha1.Task) bool {
+	if task.Status == nil {
+		task.Status = &v1alpha1.TaskStatus{}
+	}
+	before := proto.Clone(findCondition(task, condEgressPolicy)).(*v1alpha1.Condition)
+	r.reconcileEgressPolicy(ctx, task, task.GetMetadata().GetAtespace(), task.GetMetadata().GetName())
+	after := findCondition(task, condEgressPolicy)
+	return before.GetStatus() != after.GetStatus() || before.GetReason() != after.GetReason() || before.GetMessage() != after.GetMessage()
+}
+
+func findCondition(task *v1alpha1.Task, condType string) *v1alpha1.Condition {
+	for _, c := range task.GetStatus().GetConditions() {
+		if c.GetType() == condType {
+			return c
+		}
+	}
+	return nil
+}
 
 // reconcileEgressPolicy reports failures on the task's condition, never as a reconcile error.
 func (r *TaskReconciler) reconcileEgressPolicy(ctx context.Context, task *v1alpha1.Task, atespace, actorName string) {
@@ -88,7 +113,17 @@ func (r *TaskReconciler) reconcileEgressPolicy(ctx context.Context, task *v1alph
 		slog.Info("applied egress policy to actor", "atespace", atespace, "actor", actorName, "rules", len(rules))
 	}
 	setCondition(task, condEgressPolicy, "True", "EgressPolicyApplied",
-		fmt.Sprintf("Actor egress policy matches ConfigMap %s/%s", atespace, egressPolicyConfigMap), time.Now())
+		fmt.Sprintf("Actor egress policy matches ConfigMap %s/%s (%d rules, sha256:%s)", atespace, egressPolicyConfigMap, len(rules), rulesDigest(rules)), time.Now())
+}
+
+// rulesDigest identifies a rule set in the condition message, so the message changes when the applied rules do.
+func rulesDigest(rules []*ateapipb.EgressRule) string {
+	b, err := proto.MarshalOptions{Deterministic: true}.Marshal(&ateapipb.EgressPolicy{Rules: rules})
+	if err != nil {
+		return "unknown"
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:6])
 }
 
 // egressRulesFromConfigMap merges the rules of every *.yaml key in key order; metadata is ignored.

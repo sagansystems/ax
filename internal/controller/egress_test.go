@@ -309,3 +309,49 @@ func TestReconcileEgressPolicy_ConfigMapReadError(t *testing.T) {
 		t.Errorf("expected no create, got %d", len(srv.creates))
 	}
 }
+
+func TestReconcileEgressPolicy_ReappliesChangedConfigMapToRunningTask(t *testing.T) {
+	cm := map[string]string{"policy.yaml": baselineYAML}
+	cms := &fakeConfigMaps{data: map[string]map[string]string{"credtest/ax-egress-policy": cm}}
+	r, srv := newEgressReconciler(t, cms)
+	ctx := context.Background()
+
+	task := egressTask()
+	if err := r.Resume(ctx, task, nil); err != nil {
+		t.Fatalf("Resume failed: %v", err)
+	}
+	resumed := findCondition(task, "EgressPolicyApplied").GetMessage()
+
+	if r.ReconcileEgressPolicy(ctx, task) {
+		t.Errorf("ReconcileEgressPolicy reported a change for an unchanged ConfigMap")
+	}
+	if len(srv.updates) != 0 {
+		t.Errorf("expected no update for an unchanged ConfigMap, got %d", len(srv.updates))
+	}
+
+	cm["policy.yaml"] = githubYAML
+	if !r.ReconcileEgressPolicy(ctx, task) {
+		t.Errorf("ReconcileEgressPolicy reported no change after the ConfigMap changed")
+	}
+	if len(srv.updates) != 1 {
+		t.Fatalf("expected 1 update, got %d", len(srv.updates))
+	}
+	if got := hostnames(srv.policies["credtest/egress-task"].GetRules()); len(got) != 1 || got[0] != "api.github.com" {
+		t.Errorf("stored policy hostnames = %v, want [api.github.com]", got)
+	}
+	assertCondition(t, task, "EgressPolicyApplied", "True", "EgressPolicyApplied")
+	if got := findCondition(task, "EgressPolicyApplied").GetMessage(); got == resumed {
+		t.Errorf("condition message %q did not change with the ConfigMap's rules", got)
+	}
+
+	delete(cms.data, "credtest/ax-egress-policy")
+	if !r.ReconcileEgressPolicy(ctx, task) {
+		t.Errorf("ReconcileEgressPolicy reported no change after the ConfigMap was deleted")
+	}
+	if c := findCondition(task, "EgressPolicyApplied"); c != nil {
+		t.Errorf("expected no EgressPolicyApplied condition after the ConfigMap was deleted, got %v", c)
+	}
+	if got := hostnames(srv.policies["credtest/egress-task"].GetRules()); len(got) != 1 || got[0] != "api.github.com" {
+		t.Errorf("policy after ConfigMap deletion = %v, want it left as [api.github.com]", got)
+	}
+}

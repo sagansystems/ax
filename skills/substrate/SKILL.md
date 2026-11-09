@@ -107,7 +107,10 @@ instead. No mocking library is in `go.mod`.
   writes the atespace's `ax-egress-policy` ConfigMap, read from the Kubernetes
   namespace named after the atespace, as the actor's `default` egress policy
   (`internal/controller/egress.go`); the result is the task's
-  `EgressPolicyApplied` condition. No ConfigMap leaves the actor's policy alone.
+  `EgressPolicyApplied` condition, whose message carries the applied rules'
+  digest. ax-server also re-applies it to Running tasks every
+  `--egress-policy-resync-interval` (default 1m; `internal/server/egress.go`).
+  No ConfigMap leaves the actor's policy alone.
 - System info volume: every task ActorTemplate mounts a `systemInfo` volume at
   `substrate.SystemInfoMountPath` (`/run/ate/egress-trust-bundle`) with
   `trust-bundle.pem` (egress MITM CA plus system roots), `atespace` and `name`.

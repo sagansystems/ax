@@ -22,6 +22,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -85,14 +86,7 @@ func TestPortForwardWaitsForSlowKubectl(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	bin := t.TempDir()
-	script := fmt.Sprintf("#!/bin/sh\nsleep 9\necho 'Forwarding from 127.0.0.1:%s -> 8080'\nexec sleep 60\n", u.Port())
-	if err := os.WriteFile(filepath.Join(bin, "kubectl"), []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("AX_HOME", t.TempDir())
-	t.Setenv("AX_SERVER", "")
+	useFakeKubectl(t, fmt.Sprintf("sleep 9\necho 'Forwarding from 127.0.0.1:%s -> 8080'\nexec sleep 60", u.Port()))
 	const kubeContext = "slow-kubectl"
 
 	var wg sync.WaitGroup
@@ -124,4 +118,42 @@ func TestPortForwardWaitsForSlowKubectl(t *testing.T) {
 		}
 	}()
 	wg.Wait()
+}
+
+// TestPortForwardFailsFastWhenKubectlExits checks that an exited kubectl is
+// reported at once rather than after portForwardReadyTimeout.
+func TestPortForwardFailsFastWhenKubectlExits(t *testing.T) {
+	useFakeKubectl(t, "echo 'error: pods is forbidden' >&2\nexit 1")
+	const kubeContext = "failing-kubectl"
+	const limit = 10 * time.Second
+
+	start := time.Now()
+	_, err := EnsureServerURL(Options{Context: kubeContext})
+	if err == nil || !strings.Contains(err.Error(), "forbidden") {
+		t.Errorf("EnsureServerURL error = %v, want kubectl's forbidden error", err)
+	}
+	if d := time.Since(start); d > limit {
+		t.Errorf("EnsureServerURL took %s to report kubectl's exit, want under %s", d, limit)
+	}
+
+	start = time.Now()
+	_, _, err = PortForward(context.Background(), kubeContext, "ate-system", "svc/atenet-router", 443)
+	if err == nil || !strings.Contains(err.Error(), "forbidden") {
+		t.Errorf("PortForward error = %v, want kubectl's forbidden error", err)
+	}
+	if d := time.Since(start); d > limit {
+		t.Errorf("PortForward took %s to report kubectl's exit, want under %s", d, limit)
+	}
+}
+
+// useFakeKubectl puts a kubectl running body on PATH and isolates AX_HOME.
+func useFakeKubectl(t *testing.T, body string) {
+	t.Helper()
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "kubectl"), []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("AX_HOME", t.TempDir())
+	t.Setenv("AX_SERVER", "")
 }

@@ -33,6 +33,9 @@ import (
 
 var portForwardRegex = regexp.MustCompile(`Forwarding from .*:(\d+)\s+->`)
 
+// kubectl authenticates before it listens; an exec credential plugin such as tsh can take tens of seconds.
+const portForwardReadyTimeout = 60 * time.Second
+
 type TunnelInfo struct {
 	Context   string    `json:"context"`
 	Namespace string    `json:"namespace"`
@@ -254,7 +257,7 @@ func EnsureServerURL(opts Options) (string, error) {
 
 	// Wait for port assignment from log output
 	localPort := 0
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(portForwardReadyTimeout)
 	for time.Now().Before(deadline) {
 		time.Sleep(50 * time.Millisecond)
 
@@ -279,7 +282,7 @@ func EnsureServerURL(opts Options) (string, error) {
 	if localPort == 0 {
 		_ = cmd.Process.Kill()
 		logData, _ := os.ReadFile(logPath)
-		return "", fmt.Errorf("timeout waiting for kubectl port-forward on context %q: %s", ctxName, strings.TrimSpace(string(logData)))
+		return "", fmt.Errorf("timed out after %s waiting for kubectl port-forward on context %q: %s", portForwardReadyTimeout, ctxName, strings.TrimSpace(string(logData)))
 	}
 
 	// Wait for healthz to respond
@@ -387,9 +390,9 @@ func PortForward(ctx context.Context, kubeContext, namespace, targetResource str
 	case err := <-errChan:
 		cleanup()
 		return 0, nil, err
-	case <-time.After(8 * time.Second):
+	case <-time.After(portForwardReadyTimeout):
 		cleanup()
-		return 0, nil, fmt.Errorf("timed out waiting for port-forward to %s", targetResource)
+		return 0, nil, fmt.Errorf("timed out after %s waiting for port-forward to %s", portForwardReadyTimeout, targetResource)
 	case <-ctx.Done():
 		cleanup()
 		return 0, nil, ctx.Err()

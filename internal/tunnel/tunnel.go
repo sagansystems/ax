@@ -33,6 +33,9 @@ import (
 
 var portForwardRegex = regexp.MustCompile(`Forwarding from .*:(\d+)\s+->`)
 
+// kubectl authenticates before it listens; an exec credential plugin such as tsh can take tens of seconds.
+const portForwardReadyTimeout = 60 * time.Second
+
 type TunnelInfo struct {
 	Context   string    `json:"context"`
 	Namespace string    `json:"namespace"`
@@ -251,27 +254,31 @@ func EnsureServerURL(opts Options) (string, error) {
 	if err := cmd.Start(); err != nil {
 		return "", fmt.Errorf("spawning kubectl port-forward for context %q: %w", ctxName, err)
 	}
+	exited := make(chan struct{})
+	go func() {
+		_ = cmd.Wait()
+		close(exited)
+	}()
 
 	// Wait for port assignment from log output
 	localPort := 0
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		time.Sleep(50 * time.Millisecond)
-
-		logData, err := os.ReadFile(logPath)
-		if err != nil {
-			continue
+	deadline := time.Now().Add(portForwardReadyTimeout)
+	for localPort == 0 && time.Now().Before(deadline) {
+		kubectlExited := false
+		select {
+		case <-exited:
+			kubectlExited = true
+		case <-time.After(50 * time.Millisecond):
 		}
+
+		logData, _ := os.ReadFile(logPath)
 		if match := portForwardRegex.FindStringSubmatch(string(logData)); len(match) > 1 {
-			p, err := strconv.Atoi(match[1])
-			if err == nil && p > 0 {
+			if p, err := strconv.Atoi(match[1]); err == nil && p > 0 {
 				localPort = p
-				break
+				continue
 			}
 		}
-
-		// Check if command exited prematurely
-		if err := syscall.Kill(cmd.Process.Pid, 0); err != nil {
+		if kubectlExited {
 			return "", fmt.Errorf("kubectl port-forward exited for context %q: %s", ctxName, strings.TrimSpace(string(logData)))
 		}
 	}
@@ -279,7 +286,7 @@ func EnsureServerURL(opts Options) (string, error) {
 	if localPort == 0 {
 		_ = cmd.Process.Kill()
 		logData, _ := os.ReadFile(logPath)
-		return "", fmt.Errorf("timeout waiting for kubectl port-forward on context %q: %s", ctxName, strings.TrimSpace(string(logData)))
+		return "", fmt.Errorf("timed out after %s waiting for kubectl port-forward on context %q: %s", portForwardReadyTimeout, ctxName, strings.TrimSpace(string(logData)))
 	}
 
 	// Wait for healthz to respond
@@ -387,9 +394,9 @@ func PortForward(ctx context.Context, kubeContext, namespace, targetResource str
 	case err := <-errChan:
 		cleanup()
 		return 0, nil, err
-	case <-time.After(8 * time.Second):
+	case <-time.After(portForwardReadyTimeout):
 		cleanup()
-		return 0, nil, fmt.Errorf("timed out waiting for port-forward to %s", targetResource)
+		return 0, nil, fmt.Errorf("timed out after %s waiting for port-forward to %s", portForwardReadyTimeout, targetResource)
 	case <-ctx.Done():
 		cleanup()
 		return 0, nil, ctx.Err()

@@ -31,6 +31,9 @@ spec:
     path: "/workspace"   # optional; this is the default
 
   debug: true   # serve guest services inside the sandbox so `ax ssh` works; off by default
+
+  destinations:   # optional; unset gives every destination of the atespace
+    deny: [github]
 ```
 
 ### Image references
@@ -64,6 +67,23 @@ Inside the task, the command can read its config through the metadata server:
 ```bash
 curl -s "$AX_METADATA_URL/metadata/v1alpha1/ax/task" | yq .spec.config
 ```
+
+### Egress destinations
+
+When the atespace's Kubernetes namespace has an `ax-egress-policy` ConfigMap, ax-server merges the egress rules of its `*.yaml` keys, in key order, into the task's egress policy. A destination is one of those keys without `.yaml`. `spec.destinations` selects which of them the task gets:
+
+| Set | The task gets |
+| --- | --- |
+| Neither `allow` nor `deny` | every key |
+| `allow` only | `00-baseline` and the allowed keys |
+| `deny` only | every key except the denied ones |
+| Both | `00-baseline` and the allowed keys, minus the denied keys |
+
+A deny always wins over an allow, and `00-baseline` is always applied, even when denied. A destination added to the ConfigMap later reaches every task without an `allow` list.
+
+A name in `allow` or `deny` that is not a key sets the task's `EgressPolicyApplied` condition to `False` with reason `UnknownDestination`, naming it. The policy is still applied from the names that exist, and an unknown name never widens it: an unknown `allow` name adds nothing, and an unknown `deny` name removes nothing.
+
+ax-server re-applies the policy to Running tasks every `--egress-policy-resync-interval`, so a changed ConfigMap reaches them without a restart. Like the rest of the spec, `destinations` cannot change after the task is created.
 
 ## Workspace
 

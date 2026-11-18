@@ -106,9 +106,11 @@ instead. No mocking library is in `go.mod`.
 - Egress policy: `ensureSubstrateResources` (so every `Suspend` and `Resume`)
   writes the atespace's `ax-egress-policy` ConfigMap, read from the Kubernetes
   namespace named after the atespace, as the actor's `default` egress policy
-  (`internal/controller/egress.go`); the result is the task's
+  (`internal/controller/egress.go`), keeping only the keys
+  `spec.destinations` selects (`selectEgressKeys`); the result is the task's
   `EgressPolicyApplied` condition, whose message carries the applied rules'
-  digest. ax-server also re-applies it to Running tasks every
+  digest, or `False`/`UnknownDestination` when a destination is not a key.
+  ax-server also re-applies it to Running tasks every
   `--egress-policy-resync-interval` (default 1m; `internal/server/egress.go`).
   No ConfigMap leaves the actor's policy alone.
 - System info volume: every task ActorTemplate mounts a `systemInfo` volume at

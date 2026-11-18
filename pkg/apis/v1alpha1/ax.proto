@@ -86,6 +86,18 @@ message TaskSpec {
   // It is stored in plain text and shown by `ax get task`, so it must not
   // hold secrets.
   google.protobuf.Struct config = 7;
+  // destinations selects which keys of the atespace's ax-egress-policy
+  // ConfigMap make up the task's egress policy. Unset gives every key.
+  Destinations destinations = 8;
+}
+
+// Destinations names keys of the atespace's ax-egress-policy ConfigMap,
+// without the .yaml suffix. With allow set the task gets 00-baseline and the
+// allowed keys, otherwise every key; deny removes keys from either. 00-baseline
+// is always applied.
+message Destinations {
+  repeated string allow = 1;
+  repeated string deny = 2;
 }
 
 message EnvVar {

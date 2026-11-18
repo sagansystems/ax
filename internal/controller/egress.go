@@ -29,6 +29,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -48,6 +49,9 @@ const (
 	condEgressPolicy = "EgressPolicyApplied"
 	// configMapLookupTimeout bounds the ConfigMap read.
 	configMapLookupTimeout = 5 * time.Second
+	// baselineDestination is applied to every task, whatever its destinations.
+	baselineDestination = "00-baseline"
+	egressKeySuffix     = ".yaml"
 )
 
 // ErrConfigMapNotFound means the atespace has no egress policy ConfigMap.
@@ -102,7 +106,7 @@ func (r *TaskReconciler) reconcileEgressPolicy(ctx context.Context, task *v1alph
 		return
 	}
 
-	rules, err := egressRulesFromConfigMap(data)
+	rules, unknown, err := egressRulesFromConfigMap(data, task.GetSpec().GetDestinations())
 	if err != nil {
 		slog.Warn("invalid egress policy configmap, leaving the actor's policy unchanged", "atespace", atespace, "error", err)
 		setCondition(task, condEgressPolicy, "False", "InvalidEgressPolicy", err.Error(), time.Now())
@@ -118,6 +122,12 @@ func (r *TaskReconciler) reconcileEgressPolicy(ctx context.Context, task *v1alph
 	if changed {
 		slog.Info("applied egress policy to actor", "atespace", atespace, "actor", actorName, "rules", len(rules))
 	}
+	if len(unknown) > 0 {
+		setCondition(task, condEgressPolicy, "False", "UnknownDestination",
+			fmt.Sprintf("Destinations %s are not keys of ConfigMap %s/%s; applied the others (%d rules, sha256:%s)",
+				strings.Join(unknown, ", "), atespace, egressPolicyConfigMap, len(rules), rulesDigest(rules)), time.Now())
+		return
+	}
 	setCondition(task, condEgressPolicy, "True", "EgressPolicyApplied",
 		fmt.Sprintf("Actor egress policy matches ConfigMap %s/%s (%d rules, sha256:%s)", atespace, egressPolicyConfigMap, len(rules), rulesDigest(rules)), time.Now())
 }
@@ -132,25 +142,60 @@ func rulesDigest(rules []*ateapipb.EgressRule) string {
 	return hex.EncodeToString(sum[:6])
 }
 
-// egressRulesFromConfigMap merges the rules of every *.yaml key in key order; metadata is ignored.
-func egressRulesFromConfigMap(data map[string]string) ([]*ateapipb.EgressRule, error) {
-	keys := make([]string, 0, len(data))
-	for k := range data {
-		if strings.HasSuffix(k, ".yaml") {
-			keys = append(keys, k)
-		}
-	}
-	sort.Strings(keys)
-
-	var rules []*ateapipb.EgressRule
+// egressRulesFromConfigMap merges the rules of the *.yaml keys that dest selects, in key order; metadata is ignored.
+// unknown lists the names in dest that are not keys.
+func egressRulesFromConfigMap(data map[string]string, dest *v1alpha1.Destinations) (rules []*ateapipb.EgressRule, unknown []string, err error) {
+	keys, unknown := selectEgressKeys(data, dest)
 	for _, k := range keys {
 		policy, err := egressPolicyFromYAML([]byte(data[k]))
 		if err != nil {
-			return nil, fmt.Errorf("key %q: %w", k, err)
+			return nil, nil, fmt.Errorf("key %q: %w", k, err)
 		}
 		rules = append(rules, policy.GetRules()...)
 	}
-	return rules, nil
+	return rules, unknown, nil
+}
+
+// selectEgressKeys returns the sorted *.yaml keys dest selects: every key, or
+// only the allowed ones when allow is set, minus the denied ones. The baseline
+// is always selected.
+func selectEgressKeys(data map[string]string, dest *v1alpha1.Destinations) (keys, unknown []string) {
+	allow := make(map[string]bool, len(dest.GetAllow()))
+	for _, name := range dest.GetAllow() {
+		allow[name] = true
+	}
+	deny := make(map[string]bool, len(dest.GetDeny()))
+	for _, name := range dest.GetDeny() {
+		deny[name] = true
+	}
+
+	names := make(map[string]bool, len(data))
+	for k := range data {
+		name, ok := strings.CutSuffix(k, egressKeySuffix)
+		if !ok {
+			continue
+		}
+		names[name] = true
+		switch {
+		case name == baselineDestination:
+		case deny[name]:
+			continue
+		case len(allow) > 0 && !allow[name]:
+			continue
+		}
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	for _, set := range []map[string]bool{allow, deny} {
+		for name := range set {
+			if !names[name] && !slices.Contains(unknown, name) {
+				unknown = append(unknown, name)
+			}
+		}
+	}
+	sort.Strings(unknown)
+	return keys, unknown
 }
 
 // egressPolicyFromYAML mirrors kubectl-ate's egressPolicyFromManifest at

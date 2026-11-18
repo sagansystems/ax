@@ -18,6 +18,8 @@ import (
 	"context"
 	"errors"
 	"net"
+	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -358,5 +360,141 @@ func TestReconcileEgressPolicy_ReappliesChangedConfigMapToRunningTask(t *testing
 	}
 	if got := hostnames(srv.policies["credtest/egress-task"].GetRules()); len(got) != 1 || got[0] != "api.github.com" {
 		t.Errorf("policy after ConfigMap deletion = %v, want it left as [api.github.com]", got)
+	}
+}
+
+func TestSelectEgressKeys(t *testing.T) {
+	data := map[string]string{
+		"00-baseline.yaml": baselineYAML,
+		"aws.yaml":         "",
+		"github.yaml":      githubYAML,
+		"slack.yaml":       "",
+		"README.md":        "not a policy",
+	}
+	every := []string{"00-baseline.yaml", "aws.yaml", "github.yaml", "slack.yaml"}
+
+	for _, tc := range []struct {
+		name        string
+		dest        *v1alpha1.Destinations
+		wantKeys    []string
+		wantUnknown []string
+	}{
+		{name: "unset", dest: nil, wantKeys: every},
+		{name: "neither set", dest: &v1alpha1.Destinations{}, wantKeys: every},
+		{name: "allow only", dest: &v1alpha1.Destinations{Allow: []string{"github"}}, wantKeys: []string{"00-baseline.yaml", "github.yaml"}},
+		{name: "deny only", dest: &v1alpha1.Destinations{Deny: []string{"github"}}, wantKeys: []string{"00-baseline.yaml", "aws.yaml", "slack.yaml"}},
+		{
+			name:     "both",
+			dest:     &v1alpha1.Destinations{Allow: []string{"github", "slack"}, Deny: []string{"aws"}},
+			wantKeys: []string{"00-baseline.yaml", "github.yaml", "slack.yaml"},
+		},
+		{
+			name:     "deny wins over allow",
+			dest:     &v1alpha1.Destinations{Allow: []string{"github", "slack"}, Deny: []string{"slack"}},
+			wantKeys: []string{"00-baseline.yaml", "github.yaml"},
+		},
+		{name: "baseline cannot be denied", dest: &v1alpha1.Destinations{Deny: []string{"00-baseline"}}, wantKeys: every},
+		{
+			name:     "baseline applies without being allowed",
+			dest:     &v1alpha1.Destinations{Allow: []string{"aws"}, Deny: []string{"00-baseline"}},
+			wantKeys: []string{"00-baseline.yaml", "aws.yaml"},
+		},
+		{
+			name:        "unknown allow never widens",
+			dest:        &v1alpha1.Destinations{Allow: []string{"githb"}},
+			wantKeys:    []string{"00-baseline.yaml"},
+			wantUnknown: []string{"githb"},
+		},
+		{
+			name:        "unknown deny keeps the known denies",
+			dest:        &v1alpha1.Destinations{Deny: []string{"githb", "aws"}},
+			wantKeys:    []string{"00-baseline.yaml", "github.yaml", "slack.yaml"},
+			wantUnknown: []string{"githb"},
+		},
+		{
+			name:        "unknown names listed once, sorted",
+			dest:        &v1alpha1.Destinations{Allow: []string{"zz", "github", "README.md"}, Deny: []string{"zz", "aa"}},
+			wantKeys:    []string{"00-baseline.yaml", "github.yaml"},
+			wantUnknown: []string{"README.md", "aa", "zz"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			keys, unknown := controller.SelectEgressKeys(data, tc.dest)
+			if !slices.Equal(keys, tc.wantKeys) {
+				t.Errorf("keys = %v, want %v", keys, tc.wantKeys)
+			}
+			if !slices.Equal(unknown, tc.wantUnknown) {
+				t.Errorf("unknown = %v, want %v", unknown, tc.wantUnknown)
+			}
+		})
+	}
+}
+
+func TestReconcileEgressPolicy_UnsetDestinationsMatchesEveryKey(t *testing.T) {
+	data := map[string]string{"00-baseline.yaml": baselineYAML, "github.yaml": githubYAML}
+	cms := &fakeConfigMaps{data: map[string]map[string]string{"credtest/ax-egress-policy": data}}
+	r, srv := newEgressReconciler(t, cms)
+	ctx := context.Background()
+
+	task := egressTask()
+	if err := r.Resume(ctx, task, nil); err != nil {
+		t.Fatalf("Resume failed: %v", err)
+	}
+	want := proto.Clone(srv.policies["credtest/egress-task"]).(*ateapipb.EgressPolicy)
+	if got := hostnames(want.GetRules()); !slices.Equal(got, []string{"proxy.golang.org", "api.github.com"}) {
+		t.Fatalf("policy hostnames = %v, want every key's", got)
+	}
+
+	task.Spec.Destinations = &v1alpha1.Destinations{}
+	if r.ReconcileEgressPolicy(ctx, task) {
+		t.Errorf("ReconcileEgressPolicy reported a change for empty destinations")
+	}
+	if len(srv.updates) != 0 {
+		t.Errorf("expected no update for empty destinations, got %d", len(srv.updates))
+	}
+	if !proto.Equal(srv.policies["credtest/egress-task"], want) {
+		t.Errorf("policy = %v, want %v", srv.policies["credtest/egress-task"], want)
+	}
+}
+
+func TestReconcileEgressPolicy_DenyRemovesKey(t *testing.T) {
+	data := map[string]string{"00-baseline.yaml": baselineYAML, "github.yaml": githubYAML}
+	cms := &fakeConfigMaps{data: map[string]map[string]string{"credtest/ax-egress-policy": data}}
+	r, srv := newEgressReconciler(t, cms)
+
+	task := egressTask()
+	task.Spec.Destinations = &v1alpha1.Destinations{Deny: []string{"github"}}
+	r.ReconcileEgressPolicy(context.Background(), task)
+
+	assertCondition(t, task, "EgressPolicyApplied", "True", "EgressPolicyApplied")
+	if got := hostnames(srv.policies["credtest/egress-task"].GetRules()); !slices.Equal(got, []string{"proxy.golang.org"}) {
+		t.Errorf("policy hostnames = %v, want [proxy.golang.org]", got)
+	}
+}
+
+func TestReconcileEgressPolicy_UnknownDestinationAppliesKnownNames(t *testing.T) {
+	data := map[string]string{"00-baseline.yaml": baselineYAML, "github.yaml": githubYAML}
+	cms := &fakeConfigMaps{data: map[string]map[string]string{"credtest/ax-egress-policy": data}}
+	r, srv := newEgressReconciler(t, cms)
+	ctx := context.Background()
+
+	for _, tc := range []struct {
+		dest          *v1alpha1.Destinations
+		wantHostnames []string
+	}{
+		{&v1alpha1.Destinations{Deny: []string{"githb"}}, []string{"proxy.golang.org", "api.github.com"}},
+		{&v1alpha1.Destinations{Allow: []string{"githb"}}, []string{"proxy.golang.org"}},
+	} {
+		task := egressTask()
+		task.Spec.Destinations = tc.dest
+		r.ReconcileEgressPolicy(ctx, task)
+
+		assertCondition(t, task, "EgressPolicyApplied", "False", "UnknownDestination")
+		if msg := findCondition(task, "EgressPolicyApplied").GetMessage(); !strings.Contains(msg, "githb") {
+			t.Errorf("%v: condition message %q does not name githb", tc.dest, msg)
+		}
+		if got := hostnames(srv.policies["credtest/egress-task"].GetRules()); !slices.Equal(got, tc.wantHostnames) {
+			t.Errorf("%v: policy hostnames = %v, want %v", tc.dest, got, tc.wantHostnames)
+		}
 	}
 }

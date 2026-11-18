@@ -44,8 +44,9 @@ func fullTask() *v1alpha1.Task {
 			Resources: &v1alpha1.ResourcesSpec{
 				Requests: &v1alpha1.ResourceList{Cpu: "500m", Memory: "1Gi"},
 			},
-			Workspace: &v1alpha1.WorkspaceRef{Name: "ws", Path: "/workspace"},
-			Debug:     true,
+			Workspace:    &v1alpha1.WorkspaceRef{Name: "ws", Path: "/workspace"},
+			Debug:        true,
+			Destinations: &v1alpha1.Destinations{Allow: []string{"github"}, Deny: []string{"aws"}},
 		},
 		Status: &v1alpha1.TaskStatus{
 			Phase:    "Running",
@@ -618,6 +619,36 @@ spec:
 	var rejected v1alpha1.Task
 	if err := yaml.Unmarshal([]byte(listYAML), &rejected); err == nil {
 		t.Error("expected spec.workspaces list to be rejected")
+	}
+}
+
+func TestTask_Destinations_YAML(t *testing.T) {
+	for _, tc := range []struct {
+		yaml    string
+		wantSet bool
+	}{
+		{"spec: {image: alpine}\n", false},
+		{"spec: {image: alpine, destinations: {}}\n", true},
+		{"spec: {image: alpine, destinations: {deny: [github]}}\n", true},
+	} {
+		var task v1alpha1.Task
+		if err := yaml.Unmarshal([]byte(tc.yaml), &task); err != nil {
+			t.Fatalf("%q: %v", tc.yaml, err)
+		}
+		out, err := yaml.Marshal(&task)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var back v1alpha1.Task
+		if err := yaml.Unmarshal(out, &back); err != nil {
+			t.Fatalf("round trip: %v", err)
+		}
+		if got := back.GetSpec().GetDestinations() != nil; got != tc.wantSet {
+			t.Errorf("%q: destinations set after a round trip = %v, want %v:\n%s", tc.yaml, got, tc.wantSet, out)
+		}
+		if !proto.Equal(&task, &back) {
+			t.Errorf("%q: round trip changed the task:\n%s", tc.yaml, out)
+		}
 	}
 }
 
